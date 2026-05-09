@@ -1,5 +1,7 @@
 import Std.Data.TreeMap.Basic
 import Pitch
+import Music
+import Expr
 
 namespace Xml
 
@@ -332,5 +334,87 @@ def extractVoicesByTag (part : Element) : List (List (Option Pitch.Pitch)) :=
       | some _ => acc.map (fun (k, ns) => if k == v then (k, ns ++ [n]) else (k, ns))
       | none   => acc ++ [(v, [n])]) []
   voices.map fun (_, ns) => ns.map notePitch
+
+-- MIDI pitch → (step, alter, octave) using sharps for accidentals.
+-- C4 = 60; Int.emod is always non-negative in Lean 4.
+def midiToMusicXml (p : Pitch.Pitch) : String × String × String :=
+  let pc := p % 12
+  let steps : Array (String × String) := #[
+    ("C",""),  ("C","1"), ("D",""),  ("D","1"), ("E",""),
+    ("F",""),  ("F","1"), ("G",""),  ("G","1"), ("A",""),
+    ("A","1"), ("B","")]
+  let (step, alter) := steps[pc.toNat]!
+  (step, alter, toString ((p - pc) / 12 - 1))
+
+private def mkLeafElem (tag val : String) : Element :=
+  Element.Element tag Std.TreeMap.empty #[Content.Character val]
+
+def mkPitchElem (p : Pitch.Pitch) : Element :=
+  let (step, alter, oct) := midiToMusicXml p
+  let ac := if alter.isEmpty then #[] else #[Content.Element (mkLeafElem "alter" alter)]
+  Element.Element "pitch" Std.TreeMap.empty
+    (#[Content.Element (mkLeafElem "step" step)] ++ ac ++ #[Content.Element (mkLeafElem "octave" oct)])
+
+private def fillRest (p : Pitch.Pitch) (noteElem : Element) : Element :=
+  match noteElem with
+  | Element.Element n a cs =>
+      Element.Element n a (cs.map fun c =>
+        match c with
+        | Content.Element (Element.Element "rest" _ _) => Content.Element (mkPitchElem p)
+        | _ => c)
+
+private structure SubState where
+  voiceOrder : List String
+  voiceBeats : List (String × Nat)
+
+private def initSubState (part : Element) : SubState :=
+  let notes := (partNotes part).filter (!·.nIsChord)
+  let vo := notes.foldl (fun acc n =>
+    if acc.any (· == n.nVoice) then acc else acc ++ [n.nVoice]) []
+  { voiceOrder := vo, voiceBeats := vo.map (·, 0) }
+
+-- Walk the element tree in document order, replacing rests whose variable
+-- name appears in d with the solved pitch.
+partial def substituteElem (d : Expr.Dict) : SubState → Element → Element × SubState
+  | st, Element.Element name attrs cs =>
+      if name != "note" then
+        let (cs', st') := cs.foldl (fun ⟨acc, s⟩ c =>
+          match c with
+          | Content.Element e =>
+              let (e', s') := substituteElem d s e
+              (acc.push (Content.Element e'), s')
+          | _ => (acc.push c, s)) (#[], st)
+        (Element.Element name attrs cs', st')
+      else
+        let noteElem := Element.Element name attrs cs
+        let vTag := cstr "voice" noteElem
+        if hasChild "chord" noteElem then (noteElem, st)
+        else
+          let vi := st.voiceOrder.findIdx (· == vTag)
+          let bi := (st.voiceBeats.find? (·.1 == vTag)).map (·.2) |>.getD 0
+          let st' := { st with voiceBeats := st.voiceBeats.map fun (v, c) =>
+                        if v == vTag then (v, c + 1) else (v, c) }
+          if !hasChild "rest" noteElem then (noteElem, st')
+          else
+            match Expr.lookupM d s!"v{vi + 1}b{bi + 1}" with
+            | none   => (noteElem, st')
+            | some p => (fillRest p noteElem, st')
+
+-- Serialise the score with solved blanks filled in.
+-- Only the first part's voice ordering is used for variable name lookup.
+def exportScoreStr (d : Expr.Dict) (root : Element) : String :=
+  let st := match children "part" root with
+    | p :: _ => initSubState p
+    | []     => { voiceOrder := [], voiceBeats := [] }
+  let (root', _) := substituteElem d st root
+  toString root'
+
+def xmlToScore (part : Element) : Music.Score :=
+  let voices := extractVoicesByTag part
+  voices.mapIdx fun vi beats =>
+    beats.mapIdx fun bi mp =>
+      match mp with
+      | some p => Music.MPitch.known p
+      | none   => Music.MPitch.var s!"v{vi + 1}b{bi + 1}"
 
 end Xml
