@@ -227,6 +227,34 @@
       <backup>
         <duration>4</duration>
         </backup>
+      <note default-x="82.98" default-y="-50">
+        <pitch>
+          <step>C</step>
+          <octave>4</octave>
+          </pitch>
+        <duration>1</duration>
+        <voice>2</voice>
+        <type>quarter</type>
+        <stem>down</stem>
+        <staff>1</staff>
+        </note>
+      <note default-x="119.94" default-y="-70">
+        <rest/>
+        <duration>1</duration>
+        <voice>2</voice>
+        <type>quarter</type>
+        <staff>1</staff>
+        </note>
+      <note default-x="156.91" default-y="-70">
+        <rest/>
+        <duration>2</duration>
+        <voice>2</voice>
+        <type>half</type>
+        <staff>1</staff>
+        </note>
+      <backup>
+        <duration>4</duration>
+        </backup>
       <note default-x="140.41" default-y="-115">
         <rest measure="yes"/>
         <duration>4</duration>
