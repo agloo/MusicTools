@@ -1,8 +1,189 @@
-/-import Lean.Data.Xml
+import Std.Data.TreeMap.Basic
 
 namespace Xml
 
-open Lean.Xml
+abbrev Attributes := Std.TreeMap String String
+
+mutual
+inductive Element
+| Element
+    (name : String)
+    (attributes : Attributes)
+    (content : Array Content)
+
+inductive Content
+| Element   (element : Element)
+| Comment   (comment : String)
+| Character (content : String)
+deriving Inhabited
+end
+
+instance : ToString Attributes :=
+  ⟨fun as => as.foldl (fun s n v => s ++ s!" {n}=\"{v}\"") ""⟩
+
+mutual
+partial def eToString : Element → String
+| Element.Element n a c =>
+    s!"<{n}{a}>{c.map cToString |>.foldl (· ++ ·) ""}</{n}>"
+
+partial def cToString : Content → String
+| Content.Element e   => eToString e
+| Content.Comment c   => s!"<!--{c}-->"
+| Content.Character c => c
+end
+
+instance : ToString Element := ⟨eToString⟩
+instance : ToString Content := ⟨cToString⟩
+
+namespace Parser
+
+abbrev Tok := List Char
+
+def isNameStart (c : Char) : Bool := c.isAlpha || c == '_' || c == ':'
+def isNameChar  (c : Char) : Bool :=
+  c.isAlphanum || c == '_' || c == ':' || c == '.' || c == '-'
+
+partial def skipWs : Tok → Tok
+  | []      => []
+  | c :: cs => if c.isWhitespace then skipWs cs else c :: cs
+
+def expect (c : Char) : Tok → Except String Tok
+  | []      => .error s!"expected '{c}', got EOF"
+  | x :: xs =>
+      if x == c then .ok xs
+      else .error s!"expected '{c}', got '{x}'"
+
+partial def consumeStr (pref : String) (cs : Tok) : Except String Tok :=
+  let rec go : List Char → Tok → Except String Tok
+    | [],      cs       => .ok cs
+    | _ :: _,  []       => .error s!"expected '{pref}', got EOF"
+    | p :: ps, c :: cs  =>
+        if p == c then go ps cs
+        else .error s!"expected '{pref}'"
+  go pref.toList cs
+
+partial def matchPrefix : List Char → Tok → Bool
+  | [],      _       => true
+  | _ :: _,  []      => false
+  | p :: ps, c :: cs => p == c && matchPrefix ps cs
+
+def takeName : Tok → Except String (String × Tok)
+  | []      => .error "expected name, got EOF"
+  | c :: cs =>
+      if !isNameStart c then .error s!"expected name, got '{c}'"
+      else
+        let rec loop (acc : List Char) : Tok → List Char × Tok
+          | []      => (acc.reverse, [])
+          | x :: xs =>
+              if isNameChar x then loop (x :: acc) xs
+              else (acc.reverse, x :: xs)
+        let (rest, after) := loop [] cs
+        .ok (String.ofList (c :: rest), after)
+
+def decodeEntity (cs : Tok) : Except String (Char × Tok) :=
+  if matchPrefix "&amp;".toList cs   then .ok ('&',  cs.drop 5)
+  else if matchPrefix "&lt;".toList cs   then .ok ('<',  cs.drop 4)
+  else if matchPrefix "&gt;".toList cs   then .ok ('>',  cs.drop 4)
+  else if matchPrefix "&quot;".toList cs then .ok ('"',  cs.drop 6)
+  else if matchPrefix "&apos;".toList cs then .ok ('\'', cs.drop 6)
+  else .error "unsupported XML entity (only &amp; &lt; &gt; &quot; &apos; supported)"
+
+partial def takeAttrValue : Tok → Except String (String × Tok)
+  | []      => .error "expected attribute value, got EOF"
+  | q :: cs =>
+      if q != '"' && q != '\'' then
+        .error s!"expected quote for attribute value, got '{q}'"
+      else
+        let rec loop (acc : List Char) : Tok → Except String (String × Tok)
+          | []          => .error "unterminated attribute value"
+          | c :: rest   =>
+              if c == q then .ok (String.ofList acc.reverse, rest)
+              else if c == '&' then
+                match decodeEntity (c :: rest) with
+                | .ok (ch, rest') => loop (ch :: acc) rest'
+                | .error e        => .error e
+              else loop (c :: acc) rest
+        loop [] cs
+
+partial def takeAttributes : Tok → Except String (Attributes × Tok) := fun cs => do
+  let cs := skipWs cs
+  match cs with
+  | []     => .error "unexpected EOF in attributes"
+  | c :: _ =>
+      if c == '/' || c == '>' then return (Std.TreeMap.empty, cs)
+      else do
+        let (name, cs) ← takeName cs
+        let cs := skipWs cs
+        let cs ← expect '=' cs
+        let cs := skipWs cs
+        let (val, cs) ← takeAttrValue cs
+        let (rest, cs) ← takeAttributes cs
+        return (rest.insert name val, cs)
+
+partial def takeComment : Tok → Except String (String × Tok) :=
+  let rec go (acc : List Char) : Tok → Except String (String × Tok)
+    | []                          => .error "unterminated comment"
+    | '-' :: '-' :: '>' :: rest   => .ok (String.ofList acc.reverse, rest)
+    | c :: rest                   => go (c :: acc) rest
+  go []
+
+partial def takeCharData : Tok → Except String (String × Tok) :=
+  let rec loop (acc : List Char) : Tok → Except String (String × Tok)
+    | []            => .ok (String.ofList acc.reverse, [])
+    | '<' :: rest   => .ok (String.ofList acc.reverse, '<' :: rest)
+    | '&' :: rest   =>
+        match decodeEntity ('&' :: rest) with
+        | .ok (ch, rest') => loop (ch :: acc) rest'
+        | .error e        => .error e
+    | c :: rest     => loop (c :: acc) rest
+  loop []
+
+mutual
+partial def parseElement (cs : Tok) : Except String (Element × Tok) := do
+  let cs ← expect '<' cs
+  let (name, cs) ← takeName cs
+  let (attrs, cs) ← takeAttributes cs
+  let cs := skipWs cs
+  match cs with
+  | '/' :: '>' :: rest =>
+      return (.Element name attrs #[], rest)
+  | '>' :: rest => do
+      let (children, rest) ← parseContent rest
+      let rest ← consumeStr "</" rest
+      let (cname, rest) ← takeName rest
+      if cname != name then
+        .error s!"mismatched tag: opened <{name}>, closing </{cname}>"
+      else do
+        let rest := skipWs rest
+        let rest ← expect '>' rest
+        return (.Element name attrs children.toArray, rest)
+  | _ => .error s!"expected '>' or '/>' after attributes for <{name}>"
+
+partial def parseContent : Tok → Except String (List Content × Tok)
+  | []                                => .ok ([], [])
+  | '<' :: '/' :: rest                => .ok ([], '<' :: '/' :: rest)
+  | '<' :: '!' :: '-' :: '-' :: rest  => do
+      let (cmt, rest) ← takeComment rest
+      let (more, rest) ← parseContent rest
+      return (.Comment cmt :: more, rest)
+  | '<' :: rest                       => do
+      let (e, rest) ← parseElement ('<' :: rest)
+      let (more, rest) ← parseContent rest
+      return (.Element e :: more, rest)
+  | cs                                => do
+      let (txt, rest) ← takeCharData cs
+      let (more, rest) ← parseContent rest
+      return (.Character txt :: more, rest)
+end
+
+end Parser
+
+def parse (s : String) : Except String Element := do
+  let cs := Parser.skipWs s.toList
+  let (e, rest) ← Parser.parseElement cs
+  let rest := Parser.skipWs rest
+  if rest.isEmpty then .ok e
+  else .error s!"trailing content after root element: '{(String.ofList (rest.take 30))}'"
 
 def parseXml (s : String) : Element :=
   match parse s with
@@ -41,7 +222,7 @@ def filterContent : String → Content → List Element
 def children : String → Element → List Element
 | s, ⟨_, _, c⟩  => List.flatten (List.map (filterContent s) c.toList)
 
-def child (s :String) (e : Element) : Element :=
+def child (s : String) (e : Element) : Element :=
   match children s e with
   | (c :: _) => c
   | []       => ⟨ "null", Std.TreeMap.empty, Array.empty ⟩
@@ -70,111 +251,4 @@ def measure (e : Element) : Measure :=
 def measures (e : Element) : List Measure :=
   List.map measure (children "measure" e)
 
-
-def abc : Pitch := ⟨ "a", "b", "c" ⟩
-
-#eval abc
-
-noteStaff :: Voice -> String
-noteStaff v = if v == "3" || v == "4" then "2" else "1"
-
-noteStem :: Voice -> String
-noteStem v = if v == "2" || v == "4" then "down" else "up"
-
-xnote :: Note -> Element
-xnote Note{..} = unode "note"
-  [xpitch nPitch,
-   unode "duration" (show nDuration),
-   unode "voice" nVoice,
-   unode "type" "half",
-   unode "stem" (noteStem nVoice),
-   unode "staff" (noteStaff nVoice)]
-
-showNote :: Note -> String
-showNote (Note _ d p) = showPitch p ++ show d
-
-parseNote :: Voice -> String -> Note
-parseNote v (s : a : o : d) = Note v (read d) (parsePitch (s : a : o : []))
-
--- List of space-separated notes.
-parseNotesV :: Voice -> String -> [Note]
-parseNotesV v s = map (parseNote v) (words s)
-
-parseNotes :: [String] -> [[Note]]
-parseNotes xs = map (\(i,s) -> parseNotesV (show i) s) (zip [1..] xs)
-
-xclef :: String -> Element
-xclef num =
-  let (s , l) = if num == "2" then ("F", "4") else ("G", "2")
-  in unode "clef" ([numattr num], [unode "sign" s, unode "line" l])
-
-xkey :: String -> Element
-xkey num = unode "key" ([numattr num], [unode "fifths" "0", unode "mode" "major"])
-
-xtime :: Element
-xtime = unode "time" [unode "beats" "4", unode "beat-type" "4"]
-
-measureAttributes :: Element
-measureAttributes =
-  unode "attributes"
-  [unode "divisions" "4",
-   xkey "1",
-   xkey "2",
-   xtime,
-   unode "staves" "2",
-   xclef "1",
-   xclef "2"]
-
-backup :: Element
-backup = unode "backup" (unode "duration" "16")
-
-part :: [Content] -> Element
-part xs = childX "part" (onlyElems xs !! 1)
-
-splitByVoice :: [Note] -> [[Note]]
-splitByVoice = groupBy (\(Note v _ _) (Note w _ _) -> v == w)
-
--- Reorganize measures so that notes in each voice are put together.
--- Assumes voice ordering in each measure is the same.
-reorg :: [Measure] -> [[Note]]
-reorg ms = map concat (transpose (map (splitByVoice . mNotes) ms))
-
--- Reorganize list of voices of notes into measures.
-deorg :: Int -> [[Note]] -> [Measure]
-deorg notesPerMeasure nss =
-  let xss = map (chunksOf notesPerMeasure) nss
-      yss = map concat (transpose xss)
-  in map (\(mn,ns) -> Measure (show mn) ns) (zip [1..] yss)
-
-showMeasures :: [Measure] -> String
-showMeasures ms = intercalate "\n" (map (\ns -> intercalate " " (map showNote ns)) (reorg ms))
-
-xmlToMeasures :: String -> [Measure]
-xmlToMeasures = measures . part . parseXML
-
-xmeasure :: Measure -> Element
-xmeasure (Measure mn notes) = unode "measure"
-  ([numattr mn],
-   (if mn == "1" then [measureAttributes] else []) ++
-   intercalate [backup] (map (map xnote) (splitByVoice notes)))
-
-xscore :: Element -> Element
-xscore part = unode "score-partwise"
-  ([xattr "version" "3.1"],
-   [unode "work" (unode "work-title" "Test"),
-    unode "part-list" (unode "score-part" ([xattr "id" "P1"], [unode "part-name" "Piano"])),
-    part])
-
-measuresToXml :: [Measure] -> Element
-measuresToXml ms = xscore (unode "part"
-  ([xattr "id" "P1"], map xmeasure ms))
-
-header :: String
-header =
-  "<?xml version='1.0' encoding='UTF-8' standalone='no'?>\n\
-  \<!DOCTYPE score-partwise PUBLIC '//Recordare//DTD MusicXML 3.1 Partwise//EN' 'http://www.musicxml.org/dtds/partwise.dtd'>\n"
-
-ppScore :: Element -> String
-ppScore e = header ++ ppElement e
-
--/
+end Xml
