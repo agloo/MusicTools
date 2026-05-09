@@ -1,4 +1,5 @@
 import Std.Data.TreeMap.Basic
+import Pitch
 
 namespace Xml
 
@@ -208,6 +209,8 @@ structure Note where
   nVoice    : Voice
   nDuration : Duration
   nPitch    : Pitch
+  nIsRest   : Bool
+  nIsChord  : Bool
 deriving Repr
 
 structure Measure where
@@ -238,17 +241,96 @@ def cstr (s : String) (e : Element) : String :=
 def pitch (e : Element) : Pitch :=
   ⟨ cstr "step" e, cstr "alter" e, cstr "octave" e ⟩
 
+def hasChild (s : String) (e : Element) : Bool :=
+  match children s e with
+  | [] => false
+  | _  => true
+
 def note (e : Element) : Note :=
   ⟨ cstr "voice" e,
     match String.toInt? (cstr "duration" e) with
     |  some i => i
     |  none   => -1,
-    pitch (child "pitch" e) ⟩
+    pitch (child "pitch" e),
+    hasChild "rest" e,
+    hasChild "chord" e ⟩
 
 def measure (e : Element) : Measure :=
   ⟨ attr "number" e, List.map note (children "note" e) ⟩
 
 def measures (e : Element) : List Measure :=
   List.map measure (children "measure" e)
+
+-- Step letter → semitone offset within an octave (C-based).
+def stepOffset (s : Step) : Option Int :=
+  match s with
+  | "C" => some 0
+  | "D" => some 2
+  | "E" => some 4
+  | "F" => some 5
+  | "G" => some 7
+  | "A" => some 9
+  | "B" => some 11
+  | _   => none
+
+-- MusicXML pitch → MIDI int. C4 (middle C) = 60.
+-- alter is signed integer string ("1" sharp, "-1" flat), defaults to 0 when absent.
+def toPitch (p : Pitch) : Option Pitch.Pitch := do
+  let off ← stepOffset p.pStep
+  let oct ← String.toInt? p.pOctave
+  let alt := (String.toInt? p.pAlter).getD 0
+  pure ((oct + 1) * 12 + off + alt)
+
+def notePitch (n : Note) : Option Pitch.Pitch :=
+  if n.nIsRest then none else toPitch n.nPitch
+
+-- All notes in a part, in document order.
+def partNotes (part : Element) : List Note :=
+  (measures part).flatMap (·.mNotes)
+
+-- Group consecutive notes into chord-stacks: a non-chord note starts a new group,
+-- chord-marked notes append to the current group. Within a group, lower pitches
+-- come first per MusicXML convention.
+partial def chordGroups : List Note → List (List Note)
+  | [] => []
+  | n :: rest =>
+      let stack := rest.takeWhile (·.nIsChord)
+      let tail  := rest.dropWhile (·.nIsChord)
+      (n :: stack) :: chordGroups tail
+
+-- Pivot a list of stacks (each of varying height) into N parallel streams,
+-- where N = max stack height. Stacks shorter than N pad with `none`.
+def stacksToVoices (stacks : List (List Note)) : List (List (Option Note)) :=
+  let n := stacks.foldl (fun acc s => Nat.max acc s.length) 0
+  (List.range n).map fun i =>
+    stacks.map fun s => s[i]?
+
+-- Extract parallel voice streams from a part, splitting both by `<voice>` tag
+-- and by chord-stack position within each voice. Output is N streams of
+-- Option Pitch — `none` represents a rest or a missing chord member.
+def extractVoices (part : Element) : List (List (Option Pitch.Pitch)) :=
+  let notes := partNotes part
+  -- Stable group-by voice, preserving document order within each group.
+  let voices : List (String × List Note) :=
+    notes.foldl (fun acc n =>
+      let v := n.nVoice
+      match acc.find? (·.1 == v) with
+      | some _ => acc.map (fun (k, ns) => if k == v then (k, ns ++ [n]) else (k, ns))
+      | none   => acc ++ [(v, [n])]) []
+  voices.flatMap fun (_, ns) =>
+    (stacksToVoices (chordGroups ns)).map (·.map (·.bind notePitch))
+
+-- Group notes by `<voice>` tag only, treating each tag as one melodic line.
+-- For chord stacks within a voice, takes the leading (lowest) note and ignores
+-- chord-marked stack-mates. Output: one stream per voice, in document order.
+def extractVoicesByTag (part : Element) : List (List (Option Pitch.Pitch)) :=
+  let notes := (partNotes part).filter (fun n => !n.nIsChord)
+  let voices : List (String × List Note) :=
+    notes.foldl (fun acc n =>
+      let v := n.nVoice
+      match acc.find? (·.1 == v) with
+      | some _ => acc.map (fun (k, ns) => if k == v then (k, ns ++ [n]) else (k, ns))
+      | none   => acc ++ [(v, [n])]) []
+  voices.map fun (_, ns) => ns.map notePitch
 
 end Xml
