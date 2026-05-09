@@ -25,6 +25,40 @@ def IC := {n : Int // 0 ≤ n ∧ n < ic7}
 -- (Ordered) pitch-class interval (also abbreviated opci)
 def PCI := {n : Int // 0 ≤ n ∧ n < 12}
 
+-- Named interval sizes in semitones (Upi).
+def per1 : Upi := 0
+def min2 : Upi := 1
+def maj2 : Upi := 2
+def min3 : Upi := 3
+def maj3 : Upi := 4
+def per4 : Upi := 5
+def aug4 : Upi := 6
+def per5 : Upi := 7
+def min6 : Upi := 8
+def maj6 : Upi := 9
+def min7 : Upi := 10
+def maj7 : Upi := 11
+def per8 : Upi := 12
+
+-- Ordered pitch interval (signed semitones, q − p).
+def opi (p q : Pitch) : Opi := q - p
+
+-- Unordered pitch interval (absolute semitones).
+def upi (p q : Pitch) : Upi := (opi p q).natAbs
+
+-- Reduce a Upi to its size within one octave (mod 12).
+def intervalWithinOctave (n : Upi) : Upi := n % 12
+
+def isConsonant (n : Upi) : Bool :=
+  let i := intervalWithinOctave n
+  i = per1 || i = min3 || i = maj3 || i = per5 || i = min6 || i = maj6
+
+def isDissonant (n : Upi) : Bool := !isConsonant n
+
+-- Perfect intervals (per1, per4, per5, per8 mod 12 = per1).
+def isPerfect (n : Upi) : Bool :=
+  let i := intervalWithinOctave n
+  i = per1 || i = per4 || i = per5
 /-
 
 intervalWithinOctave : Upi → Upi
