@@ -1,41 +1,319 @@
-import QtQuick 2.0
+import QtQuick 2.9
+import QtQuick.Controls 2.0
+import QtQuick.Layouts 1.1
+import Qt.labs.settings 1.0
 import MuseScore 3.0
 import FileIO 3.0
 
 MuseScore {
     menuPath:    "Plugins.MusicTools Counterpoint"
-    version:     "1.0"
-    description: "No selection → check counterpoint. Selection → solve those beats."
+    version:     "1.1"
+    description: "Counterpoint checker / solver. Pick a species and adjust soft-constraint weights."
+    pluginType:  "dialog"
+    width:       560
+    height:      720
 
+    // -----------------------------------------------------------------------
     // Workflow:
     //   1. Run ./watch.sh once in a terminal. Leave it running.
-    //   2. Either:
-    //        • Hit the hotkey with no selection → checker highlights violations.
-    //        • Select notes (single or range), hit the hotkey → solver replaces
-    //          the selected notes' pitches with a valid counterpoint.
-    //      The hotkey is bound to a single plugin entry; mode is auto-chosen.
+    //   2. Open this dialog from the Plugins menu (or hotkey).
+    //   3. Pick a species, adjust weights.
+    //   4. Click "Check" with no selection → highlight violations + show score.
+    //      Or select notes and click "Solve selected" → solver fills them in
+    //      (solver is first-species only for now).
+    //
+    // Settings (species + weights per species) persist via Qt.labs.settings.
+    // -----------------------------------------------------------------------
 
     property string scorePath:      "/tmp/musescore_check.json"
     property string responsePath:   "/tmp/musescore_check_violations.json"
     property string requestId:      ""
     property string statusMarker:   "⚠"
+    property string scoreMarker:    "♪"
 
     property var ruleAbbrev: ({
-        "vertical-interval":   "bad ivl",
-        "start-perfect":       "start≠P",
-        "end-perfect":         "end≠P",
-        "direct-into-perfect": "direct→P"
+        "vertical-interval":            "bad ivl",
+        "start-perfect":                "start≠P",
+        "end-perfect":                  "end≠P",
+        "direct-into-perfect":          "direct→P",
+        "strong-dissonant":             "diss(strong)",
+        "weak-dissonant":               "diss(weak)",
+        "parallel-perfect-strong":      "‖P (strong)",
+        "direct-into-perfect-strong":   "direct→P (strong)",
+        "unison-strong":                "unison",
+        "downbeat-dissonant":           "diss(down)",
+        "offbeat-dissonant":            "diss(off)",
+        "parallel-perfect-downbeats":   "‖P (down)"
     })
 
-    FileIO {
-        id: scoreFile
-        source: "/tmp/musescore_check.json"
+    // Default weights per species — must match Lean defaults in
+    // SecondSpeciesSoftWeighted.Weights, ThirdSpeciesSoftWeighted.Weights, etc.
+    property var weightSchemas: ({
+        "1": [],
+        "2": [
+            { key: "chromatic",       label: "Chromatic note",           min: -100, max: 100, def: -39 },
+            { key: "imperfect",       label: "Imperfect strong-beat",    min: -100, max: 100, def:  40 },
+            { key: "contrary",        label: "Contrary motion",          min: -100, max: 100, def:  50 },
+            { key: "repeated",        label: "Repeated note",            min: -100, max: 100, def: -29 },
+            { key: "startEnd",        label: "Start/end perfect",        min: -100, max: 100, def:  80 },
+            { key: "strongConsonant", label: "Strong-beat consonant",    min: -100, max: 100, def:  40 },
+            { key: "weakConsonant",   label: "Weak-beat consonant",      min: -100, max: 100, def:  20 },
+            { key: "passingTone",     label: "Passing tone",             min: -100, max: 100, def:  10 },
+            { key: "parallelPerfect", label: "Parallel perfect",         min: -100, max: 100, def: -60 },
+            { key: "directPerfect",   label: "Direct into perfect",      min: -100, max: 100, def: -40 },
+            { key: "midUnison",       label: "Mid-piece unison",         min: -100, max: 100, def: -70 }
+        ],
+        "3": [
+            { key: "downbeatConsonant", label: "Downbeat consonant",     min: -100, max: 100, def:  50 },
+            { key: "passingTone",       label: "Passing tone",           min: -100, max: 100, def:  30 },
+            { key: "cambiata",          label: "Cambiata",               min: -100, max: 100, def:  40 },
+            { key: "contraryMotion",    label: "Contrary motion → P",    min: -100, max: 100, def:  50 },
+            { key: "repeatedNote",      label: "Repeated note",          min: -100, max: 100, def: -25 },
+            { key: "startEnd",          label: "Start/end perfect",      min: -100, max: 100, def:  80 },
+            { key: "downbeatDissonant", label: "Downbeat dissonant",     min: -100, max: 100, def: -50 },
+            { key: "offbeatDissonant",  label: "Offbeat dissonant",      min: -100, max: 100, def: -30 },
+            { key: "parallelPerfect",   label: "Parallel perfect",       min: -100, max: 100, def: -60 },
+            { key: "directPerfect",     label: "Direct into perfect",    min: -100, max: 100, def: -40 }
+        ],
+        "4": [
+            { key: "validSuspension",       label: "Valid suspension (4-3 / 7-6)", min: -100, max: 100, def:  60 },
+            { key: "syncopation",           label: "Syncopation tie",              min: -100, max: 100, def:  40 },
+            { key: "consonance",            label: "Consonance on 3rd beat",       min: -100, max: 100, def:  30 },
+            { key: "startEnd",              label: "Start/end perfect",            min: -100, max: 100, def:  80 },
+            { key: "penultimateSuspension", label: "Penultimate 7-6",              min: -100, max: 100, def:  70 },
+            { key: "invalid",               label: "Invalid suspension",           min: -100, max: 100, def: -40 }
+        ],
+        // Fifth species reuses the second/third/fourth weights via nested
+        // groups; for compactness the dialog shows the most-impactful subset.
+        "5": [
+            { key: "secondStrongConsonant", label: "2nd: Strong consonant", min: -100, max: 100, def:  40 },
+            { key: "secondPassingTone",     label: "2nd: Passing tone",     min: -100, max: 100, def:  10 },
+            { key: "thirdPassingTone",      label: "3rd: Passing tone",     min: -100, max: 100, def:  30 },
+            { key: "thirdCambiata",         label: "3rd: Cambiata",         min: -100, max: 100, def:  40 },
+            { key: "thirdContraryMotion",   label: "3rd: Contrary→P",       min: -100, max: 100, def:  50 },
+            { key: "thirdRepeatedNote",     label: "3rd: Repeated note",    min: -100, max: 100, def: -25 },
+            { key: "thirdDirectPerfect",    label: "3rd: Direct→P",         min: -100, max: 100, def: -40 },
+            { key: "fourthSyncopation",     label: "4th: Syncopation",      min: -100, max: 100, def:  40 },
+            { key: "fourthValidSuspension", label: "4th: Valid suspension", min: -100, max: 100, def:  60 },
+            { key: "fourthInvalid",         label: "4th: Invalid susp.",    min: -100, max: 100, def: -40 }
+        ]
+    })
+
+    // Persistent settings: speciesIdx (0..4 → species 1..5) and weightStore
+    // (a JSON-encoded object keyed by "species:key").
+    Settings {
+        id: prefs
+        category: "MusicToolsCounterpoint"
+        property int speciesIdx: 0
+        property string weightStore: "{}"
     }
 
-    FileIO {
-        id: responseFile
-        source: "/tmp/musescore_check_violations.json"
+    property var weightCache: ({})
+
+    Component.onCompleted: {
+        try { weightCache = JSON.parse(prefs.weightStore) || {} }
+        catch (e) { weightCache = {} }
+        rebuildSliders()
     }
+
+    function currentSpecies() { return speciesCombo.currentIndex + 1 }
+
+    function weightKey(species, k) { return species + ":" + k }
+
+    function getWeight(species, schemaEntry) {
+        var k = weightKey(species, schemaEntry.key)
+        if (weightCache[k] !== undefined) return weightCache[k]
+        return schemaEntry.def
+    }
+
+    function setWeight(species, key, value) {
+        weightCache[weightKey(species, key)] = value
+        prefs.weightStore = JSON.stringify(weightCache)
+    }
+
+    // Build the weights JSON object for the current species, in the shape the
+    // Lean side expects (per-species fields, or nested for species 5).
+    function buildWeightsPayload() {
+        var sp = currentSpecies()
+        var schema = weightSchemas[sp.toString()]
+        if (!schema || schema.length === 0) return {}
+        if (sp === 5) {
+            var out = { second: {}, third: {}, fourth: {} }
+            for (var i = 0; i < schema.length; i++) {
+                var e = schema[i]
+                var v = getWeight(sp, e)
+                // Map flat species-5 keys → nested {second|third|fourth}.<field>
+                if (e.key.indexOf("second") === 0)      out.second[lower1(e.key.substring(6))]      = v
+                else if (e.key.indexOf("third") === 0)  out.third[lower1(e.key.substring(5))]       = v
+                else if (e.key.indexOf("fourth") === 0) out.fourth[lower1(e.key.substring(6))]      = v
+            }
+            return out
+        } else {
+            var flat = {}
+            for (var j = 0; j < schema.length; j++) {
+                var ej = schema[j]
+                flat[ej.key] = getWeight(sp, ej)
+            }
+            return flat
+        }
+    }
+
+    function lower1(s) {
+        return s.length === 0 ? s : s.charAt(0).toLowerCase() + s.substring(1)
+    }
+
+    // -----------------------------------------------------------------------
+    // UI
+    // -----------------------------------------------------------------------
+
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 12
+        spacing: 10
+
+        RowLayout {
+            spacing: 8
+            Label { text: "Species:" }
+            ComboBox {
+                id: speciesCombo
+                model: ["1 — note vs. note",
+                        "2 — 2:1",
+                        "3 — 4:1",
+                        "4 — suspensions",
+                        "5 — florid"]
+                currentIndex: prefs.speciesIdx
+                onCurrentIndexChanged: {
+                    prefs.speciesIdx = currentIndex
+                    rebuildSliders()
+                }
+                Layout.fillWidth: true
+            }
+        }
+
+        Label {
+            id: scoreLabel
+            text: ""
+            color: "#205020"
+            font.bold: true
+            visible: text.length > 0
+        }
+
+        GroupBox {
+            title: "Soft constraint weights"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: currentSpecies() !== 1
+
+            ScrollView {
+                anchors.fill: parent
+                clip: true
+                ColumnLayout {
+                    id: slidersColumn
+                    width: parent ? parent.width : 480
+                    spacing: 6
+                }
+            }
+        }
+
+        Label {
+            visible: currentSpecies() === 1
+            text: "First species has no soft weights — only strict rules."
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+
+        RowLayout {
+            spacing: 8
+            Layout.fillWidth: true
+            Button {
+                text: "Check"
+                onClicked: runCheck()
+                Layout.fillWidth: true
+            }
+            Button {
+                text: "Solve selected"
+                onClicked: {
+                    var keys = gatherSelectedKeys()
+                    if (keys === null) {
+                        scoreLabel.text = scoreMarker + " no selection — select notes to solve"
+                    } else if (currentSpecies() !== 1) {
+                        scoreLabel.text = scoreMarker + " solver is first-species only (for now)"
+                    } else {
+                        runSolve(keys)
+                    }
+                }
+                Layout.fillWidth: true
+            }
+            Button {
+                text: "Reset weights"
+                onClicked: {
+                    var sp = currentSpecies()
+                    var schema = weightSchemas[sp.toString()]
+                    for (var i = 0; i < schema.length; i++) {
+                        delete weightCache[weightKey(sp, schema[i].key)]
+                    }
+                    prefs.weightStore = JSON.stringify(weightCache)
+                    rebuildSliders()
+                }
+            }
+            Button {
+                text: "Close"
+                onClicked: Qt.quit()
+            }
+        }
+    }
+
+    Component {
+        id: weightRowComponent
+        RowLayout {
+            property var entry
+            property int sp
+            spacing: 8
+            Layout.fillWidth: true
+            Label {
+                text: entry.label
+                Layout.preferredWidth: 200
+                elide: Text.ElideRight
+            }
+            Slider {
+                id: slider
+                from:    entry.min
+                to:      entry.max
+                value:   getWeight(sp, entry)
+                stepSize: 1
+                snapMode: Slider.SnapAlways
+                Layout.fillWidth: true
+                onMoved: {
+                    setWeight(sp, entry.key, Math.round(value))
+                    valueLabel.text = Math.round(value).toString()
+                }
+            }
+            Label {
+                id: valueLabel
+                text: Math.round(slider.value).toString()
+                Layout.preferredWidth: 40
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+    }
+
+    function rebuildSliders() {
+        // Drop existing rows.
+        for (var i = slidersColumn.children.length - 1; i >= 0; i--) {
+            var c = slidersColumn.children[i]
+            if (c && c.destroy) c.destroy()
+        }
+        var sp = currentSpecies()
+        var schema = weightSchemas[sp.toString()]
+        if (!schema) return
+        for (var j = 0; j < schema.length; j++) {
+            weightRowComponent.createObject(slidersColumn,
+                { entry: schema[j], sp: sp })
+        }
+    }
+
+    FileIO { id: scoreFile;    source: "/tmp/musescore_check.json" }
+    FileIO { id: responseFile; source: "/tmp/musescore_check_violations.json" }
 
     Timer {
         id: pollTimer
@@ -50,7 +328,6 @@ MuseScore {
                 clearStatusTexts()
                 addStatusAtStart(statusMarker + " timeout — is watch.sh running?")
                 curScore.endCmd()
-                Qt.quit()
                 return
             }
             var raw = responseFile.read()
@@ -60,67 +337,28 @@ MuseScore {
             if (!data || data.id !== requestId) return
             stop()
             applyResponse(data)
-            Qt.quit()
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Entry point — pick check vs solve based on selection
+    onRun: {
+        // Dialog is shown automatically. No score-mutation on open.
+    }
+
     // -----------------------------------------------------------------------
 
     property string lastDebug: ""
 
-    onRun: {
-        lastDebug = buildSelectionDebug()
-        var selectedKeys = gatherSelectedKeys()
-        if (selectedKeys === null) runCheck()
-        else                       runSolve(selectedKeys)
-    }
-
-    function buildSelectionDebug() {
-        var lines = []
-        lines.push("Element.NOTE=" + (typeof Element !== "undefined" ? Element.NOTE : "undef"))
-        lines.push("Element.CHORD=" + (typeof Element !== "undefined" ? Element.CHORD : "undef"))
-        lines.push("Element.REST=" + (typeof Element !== "undefined" ? Element.REST : "undef"))
-        var sel = curScore.selection
-        lines.push("selection: " + (sel ? "obj" : "null"))
-        if (sel) {
-            lines.push("elements: " +
-                (sel.elements === undefined ? "undefined" :
-                 sel.elements === null ? "null" :
-                 ("len=" + sel.elements.length)))
-            lines.push("isRange: " + sel.isRange)
-            lines.push("startSegment: " +
-                (sel.startSegment ? ("tick=" + sel.startSegment.tick) : "null"))
-            lines.push("endSegment: " +
-                (sel.endSegment ? ("tick=" + sel.endSegment.tick) : "null"))
-            lines.push("startStaff: " + sel.startStaff +
-                       " endStaff: " + sel.endStaff)
-            if (sel.elements && sel.elements.length > 0) {
-                for (var i = 0; i < Math.min(sel.elements.length, 4); i++) {
-                    var el = sel.elements[i]
-                    if (!el) { lines.push("el[" + i + "]: null"); continue }
-                    var info = "el[" + i + "]: type=" + el.type +
-                               " name=" + (el.name || "?")
-                    if (el.parent) {
-                        var p = el.parent
-                        info += " p.type=" + p.type +
-                                " p.staffIdx=" + p.staffIdx +
-                                " p.voice=" + p.voice
-                        if (p.parent) info += " p.p.tick=" + p.parent.tick
-                    } else {
-                        info += " parent=null"
-                    }
-                    lines.push(info)
-                }
-            }
-        }
-        return lines.join(" | ")
-    }
-
     function applyResponse(data) {
-        if (data.mode === "solve") applySolveResult(data.results || [])
-        else                       applyCheckResult(data.violations || [])
+        if (data.mode === "solve") {
+            applySolveResult(data.results || [])
+            scoreLabel.text = scoreMarker + " solve done"
+        } else {
+            applyCheckResult(data.violations || [])
+            var sc = (data.score !== undefined) ? (" — score " + data.score) : ""
+            var n = (data.violations || []).length
+            scoreLabel.text = scoreMarker + " " + n + " violation" +
+                              (n === 1 ? "" : "s") + sc
+        }
     }
 
     function newRequestId() {
@@ -132,8 +370,6 @@ MuseScore {
     // Selection introspection
     // -----------------------------------------------------------------------
 
-    // Returns a map "staff:voice:tick" → true for every chord OR rest in the
-    // current selection, or null if nothing is selected.
     function gatherSelectedKeys() {
         var sel = curScore.selection
         if (!sel || !sel.elements || sel.elements.length === 0) return null
@@ -142,8 +378,6 @@ MuseScore {
         for (var i = 0; i < sel.elements.length; i++) {
             var el = sel.elements[i]
             if (!el) continue
-            // Resolve to the segment-anchored container (chord for notes,
-            // rest as itself, chord as itself).
             var anchor = null
             if      (el.type === Element.NOTE)  anchor = el.parent
             else if (el.type === Element.CHORD) anchor = el
@@ -163,13 +397,23 @@ MuseScore {
     }
 
     // -----------------------------------------------------------------------
-    // Check mode (unchanged behavior)
+    // Check mode
     // -----------------------------------------------------------------------
 
     function runCheck() {
+        if (!curScore) {
+            scoreLabel.text = statusMarker + " no score open"
+            return
+        }
         requestId = newRequestId()
         var parts = buildCheckJson()
-        var doc = { id: requestId, mode: "check", parts: parts, _debug: lastDebug }
+        var doc = {
+            id: requestId,
+            mode: "check",
+            species: currentSpecies(),
+            weights: buildWeightsPayload(),
+            parts: parts
+        }
         scoreFile.write(JSON.stringify(doc))
         pollTimer.attempts = 0
         pollTimer.start()
@@ -254,7 +498,6 @@ MuseScore {
         noteList[stepIdx].color = "#ff0000"
     }
 
-    // parts[partIdx] = [ [pitch|null, ...] (voice 0), ... ]
     function buildCheckJson() {
         var parts = []
         var numStaves = curScore.nstaves
@@ -286,7 +529,7 @@ MuseScore {
     }
 
     // -----------------------------------------------------------------------
-    // Solve mode
+    // Solve mode (first-species only; future work to extend)
     // -----------------------------------------------------------------------
 
     function runSolve(selectedKeys) {
@@ -295,14 +538,12 @@ MuseScore {
         if (cpInfo === null) { runCheck(); return }
         requestId = newRequestId()
         var parts = buildSolveJson(map, selectedKeys, cpInfo)
-        var doc = { id: requestId, mode: "solve", parts: parts, _debug: lastDebug }
+        var doc = { id: requestId, mode: "solve", parts: parts }
         scoreFile.write(JSON.stringify(doc))
         pollTimer.attempts = 0
         pollTimer.start()
     }
 
-    // First (staff, voice) pair (in score order) with at least one selected
-    // slot (chord or rest).
     function findCpVoice(map, selectedKeys) {
         for (var staff = 0; staff < map.length; staff++) {
             var entry = map[staff]
@@ -318,13 +559,6 @@ MuseScore {
         return null
     }
 
-    // Per-slot {pitch, free} for every voice. Free rules:
-    //   • CP voice rest: always free (rests are illegal in 1st species).
-    //   • CP voice chord, in selection: free.
-    //   • Anything else: known.
-    // Rest pitches are emitted as 0 (Lean ignores pitch when free=true).
-    // CF voices are expected to have no rests; if they do, behavior is
-    // undefined (the solver will see pitch=0 known notes).
     function buildSolveJson(map, selectedKeys, cpInfo) {
         var parts = []
         for (var staff = 0; staff < map.length; staff++) {
@@ -394,9 +628,6 @@ MuseScore {
         }
     }
 
-    // Walk the (staff, msVoice) until we land on the rest at the given tick,
-    // then call cursor.addNote(pitch). MuseScore replaces the rest with a
-    // chord of the rest's duration.
     function replaceRestAtTick(staff, msVoice, tick, pitch) {
         var cursor = curScore.newCursor()
         cursor.rewind(0)
@@ -421,12 +652,8 @@ MuseScore {
         addStatusAtStep(partIdx, msVoice, 0, statusMarker + " " + msg)
     }
 
-    // MIDI pitch → MuseScore tonal pitch class. Naturals first; sharps as
-    // defensive fallback (the diatonic-C-major solver currently only emits
-    // naturals, so the sharp slots aren't exercised today).
     function midiToTpc(midi) {
         var pc = ((midi % 12) + 12) % 12
-        // C  C# D  D# E  F  F# G  G# A  A# B
         var tpcs = [14, 21, 16, 23, 18, 13, 20, 15, 22, 17, 24, 19]
         return tpcs[pc]
     }
@@ -453,11 +680,6 @@ MuseScore {
         return found
     }
 
-    // map[part] = { order: [msVoice...],
-    //               notes: { msVoice: [Note...] },          (chord-only)
-    //               ticks: { msVoice: [tick...] },          (chord-only)
-    //               slots: { msVoice: [Slot...] } }         (chords + rests)
-    // Slot = { kind: "chord"|"rest", note: Note|null, tick: int }
     function buildVoiceMap() {
         var map = []
         var numStaves = curScore.nstaves

@@ -13,31 +13,39 @@ namespace FifthSpeciesSoftWeighted
   Fifth species (florid counterpoint) is a free mixture of first through fourth
   species. Soft-weight scoring combines criteria from species 2, 3, and 4.
 
-  First species has no soft weights (only hard constraints). A real fifth
-  species score needs per-measure rhythm labels, because the same flat pitch
-  list cannot tell whether a two-note measure is second or fourth species.
+  Weights are bundled per sub-species in `Weights`.
 -/
+
+structure Weights where
+  second : SecondSpeciesSoftWeighted.Weights := {}
+  third  : ThirdSpeciesSoftWeighted.Weights  := {}
+  fourth : FourthSpeciesSoftWeighted.Weights := {}
+  deriving Repr
+
+def defaultWeights : Weights := {}
 
 def lastPitch (xs : List Pitch.Pitch) : Option Pitch.Pitch :=
   xs[xs.length - 1]?
 
 def scoreMeasureLocal
-    (label : FifthSpecies.Species) (c : Pitch.Pitch) (chunk : List Pitch.Pitch) : Int :=
+    (w : Weights) (label : FifthSpecies.Species)
+    (c : Pitch.Pitch) (chunk : List Pitch.Pitch) : Int :=
   match label with
   | .first => 0
   | .second =>
-      SecondSpeciesSoftWeighted.scoreStrongConsonant [c] chunk +
-      SecondSpeciesSoftWeighted.scoreWeakBeats [c] chunk +
-      SecondSpeciesSoftWeighted.scoreImperfectStrongBeats [c] chunk
+      SecondSpeciesSoftWeighted.scoreStrongConsonant w.second [c] chunk +
+      SecondSpeciesSoftWeighted.scoreWeakBeats w.second [c] chunk +
+      SecondSpeciesSoftWeighted.scoreImperfectStrongBeats w.second [c] chunk
   | .third =>
-      ThirdSpeciesSoftWeighted.scoreDownbeatConsonant [c] chunk +
-      ThirdSpeciesSoftWeighted.scorePassingTones [c] chunk +
-      ThirdSpeciesSoftWeighted.scoresCambiata [c] chunk +
-      ThirdSpeciesSoftWeighted.scoreOffbeatDissonances [c] chunk
+      ThirdSpeciesSoftWeighted.scoreDownbeatConsonant w.third [c] chunk +
+      ThirdSpeciesSoftWeighted.scorePassingTones w.third [c] chunk +
+      ThirdSpeciesSoftWeighted.scoresCambiata w.third [c] chunk +
+      ThirdSpeciesSoftWeighted.scoreOffbeatDissonances w.third [c] chunk
   | .fourth =>
-      FourthSpeciesSoftWeighted.scoreThirdBeatConsonant [c] chunk
+      FourthSpeciesSoftWeighted.scoreThirdBeatConsonant w.fourth [c] chunk
 
 def scoreBarlineMotion
+    (w : Weights)
     (cf : List Pitch.Pitch)
     (chunks : List (List Pitch.Pitch))
     (labels : List FifthSpecies.Species) : Int := Id.run do
@@ -51,18 +59,19 @@ def scoreBarlineMotion
     let iv2 := upi c2 p2
     let mo := motion c1 c2 p1 p2
     if isPerfectConsonance iv2 && mo = Motion.contrary then
-      score := score + ThirdSpeciesSoftWeighted.contraryMotionWeight
+      score := score + w.third.contraryMotion
     else if isPerfectConsonance iv2 && isDirect mo then
-      score := score + ThirdSpeciesSoftWeighted.directPerfectWeight
+      score := score + w.third.directPerfect
     let currentIsFourth := match labels[m]? with | some .fourth => true | _ => false
     if !currentIsFourth then
       let some prevChunk := chunks[m - 1]? | continue
       let some prevLast := lastPitch prevChunk | continue
       if prevLast = p2 then
-        score := score + ThirdSpeciesSoftWeighted.repeatedNoteWeight
+        score := score + w.third.repeatedNote
   return score
 
 def scoreFourthSegments
+    (w : Weights)
     (cf : List Pitch.Pitch)
     (chunks : List (List Pitch.Pitch))
     (labels : List FifthSpecies.Species) : Int := Id.run do
@@ -77,20 +86,21 @@ def scoreFourthSegments
     let some prevChunk := chunks[m - 1]? | continue
     let some prevLast := lastPitch prevChunk | continue
     if prevLast = strong then
-      score := score + FourthSpeciesSoftWeighted.syncopationWeight
+      score := score + w.fourth.syncopation
     else
-      score := score - FourthSpeciesSoftWeighted.syncopationWeight
+      score := score - w.fourth.syncopation
     let suspension := upi c strong
     let resolution := upi c weak
     if isDissonant suspension then
-      let s := FourthSpeciesSoftWeighted.scoreValidSuspension suspension resolution
+      let s := FourthSpeciesSoftWeighted.scoreValidSuspension w.fourth suspension resolution
       if s = 0 then
-        score := score + FourthSpeciesSoftWeighted.invalidWeight
+        score := score + w.fourth.invalid
       else
         score := score + s
   return score
 
 def scoreFifthSpeciesWithLabels
+    (w : Weights)
     (cf cp : List Pitch.Pitch)
     (labels : List FifthSpecies.Species) : Int := Id.run do
   let chunks := FifthSpecies.chunkCp labels cp
@@ -99,9 +109,9 @@ def scoreFifthSpeciesWithLabels
     let some c := cf[m]? | continue
     let some chunk := chunks[m]? | continue
     let some label := labels[m]? | continue
-    score := score + scoreMeasureLocal label c chunk
-  score := score + scoreBarlineMotion cf chunks labels
-  score := score + scoreFourthSegments cf chunks labels
+    score := score + scoreMeasureLocal w label c chunk
+  score := score + scoreBarlineMotion w cf chunks labels
+  score := score + scoreFourthSegments w cf chunks labels
   return score
 
 def inferUniformLabels (cf cp : List Pitch.Pitch) : List FifthSpecies.Species :=
@@ -114,7 +124,7 @@ def inferUniformLabels (cf cp : List Pitch.Pitch) : List FifthSpecies.Species :=
 
 -- Backwards-compatible fallback for uniform-rhythm inputs. Mixed fifth species
 -- should call `scoreFifthSpeciesWithLabels`.
-def scoreFifthSpecies (cf cp : List Pitch.Pitch) : Int :=
-  scoreFifthSpeciesWithLabels cf cp (inferUniformLabels cf cp)
+def scoreFifthSpecies (w : Weights := {}) (cf cp : List Pitch.Pitch) : Int :=
+  scoreFifthSpeciesWithLabels w cf cp (inferUniformLabels cf cp)
 
 end FifthSpeciesSoftWeighted
