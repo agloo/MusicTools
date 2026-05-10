@@ -164,7 +164,7 @@ MuseScore {
     function selectSpecies(i) {
         speciesIdx = i
         scoreLabel.text = scoreMarker + " selected " + speciesOptions[i].title
-        pointDetailsText = pointGuideForSpecies(currentSpecies(), null, [])
+        pointDetailsText = pointGuideForSpecies(currentSpecies(), null, [], [])
     }
 
     function closeDialog() {
@@ -250,7 +250,7 @@ MuseScore {
         Text {
             id: scoreLabel
             x: 18
-            y: 405
+            y: 424
             width: parent.width - 36
             text: scoreMarker + " selected " + speciesOptions[speciesIdx].title
             color: "#205020"
@@ -261,7 +261,7 @@ MuseScore {
 
         Text {
             x: 18
-            y: 434
+            y: 448
             width: parent.width - 36
             text: (currentSpecies() === 1
                 ? "First species has no soft weights. Species 2-5 use default soft weights."
@@ -274,7 +274,7 @@ MuseScore {
         Rectangle {
             id: pointPanel
             x: 18
-            y: 466
+            y: 480
             width: parent.width - 36
             height: parent.height - y - 92
             radius: 4
@@ -443,7 +443,8 @@ MuseScore {
                               (n === 1 ? "" : "s") + sc
             pointDetailsText = pointGuideForSpecies(currentSpecies(),
                                                     data.score,
-                                                    data.violations || [])
+                                                    data.violations || [],
+                                                    data.points || [])
         }
     }
 
@@ -451,7 +452,7 @@ MuseScore {
         return n > 0 ? ("+" + n) : n.toString()
     }
 
-    function pointGuideForSpecies(sp, score, violations) {
+    function pointGuideForSpecies(sp, score, violations, points) {
         var lines = []
         if (score === null || score === undefined)
             lines.push("Run Check to see the current score.")
@@ -465,6 +466,38 @@ MuseScore {
             lines.push("Default soft weights:")
             for (var i = 0; i < schema.length; i++)
                 lines.push(signed(schema[i].def) + "  " + schema[i].label)
+        }
+
+        if (points && points.length > 0) {
+            lines.push("")
+            lines.push("Point events:")
+            var ordered = points.slice(0)
+            ordered.sort(function(a, b) {
+                var ap = (a.part === undefined) ? 0 : a.part
+                var bp = (b.part === undefined) ? 0 : b.part
+                if (ap !== bp) return ap - bp
+                var as = (a.step === undefined) ? 0 : a.step
+                var bs = (b.step === undefined) ? 0 : b.step
+                return as - bs
+            })
+            var running = 0
+            for (var k = 0; k < ordered.length; k++) {
+                var p = ordered[k]
+                var pts = (p.points === undefined) ? 0 : p.points
+                running += pts
+                var partText = (p.part !== undefined && p.part > 0)
+                    ? ("part " + (p.part + 1) + ", ")
+                    : ""
+                var step = (p.step === undefined) ? 0 : p.step
+                var rule = p.rule ? p.rule : "score"
+                var detail = p.detail ? (" - " + p.detail) : ""
+                lines.push(partText + "step " + step + ": " +
+                           signed(pts) + " (total " + running + ") " +
+                           rule + detail)
+            }
+        } else if (score !== null && score !== undefined && sp > 1) {
+            lines.push("")
+            lines.push("No soft-score point events were returned.")
         }
 
         if (violations && violations.length > 0) {
