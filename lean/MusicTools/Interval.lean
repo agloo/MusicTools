@@ -59,6 +59,49 @@ def isDissonant (n : Upi) : Bool := !isConsonant n
 def isPerfect (n : Upi) : Bool :=
   let i := intervalWithinOctave n
   i = per1 || i = per4 || i = per5
+
+inductive Motion where
+  | parallel  -- same direction, same interval size
+  | similar   -- same direction, different interval size
+  | contrary  -- opposite directions
+  | oblique   -- one voice stationary
+  | static    -- both voices stationary
+deriving Repr, DecidableEq
+
+def sgn : Int → Int
+  | .ofNat 0       => 0
+  | .ofNat (_+1)   => 1
+  | .negSucc _     => -1
+
+-- Classify motion between two voices across one time step.
+-- (a1,a2) is voice A's two pitches; (b1,b2) is voice B's.
+def motion (a1 a2 b1 b2 : Pitch) : Motion :=
+  let da := sgn (opi a1 a2)
+  let db := sgn (opi b1 b2)
+  if da = 0 && db = 0 then Motion.static
+  else if da = 0 || db = 0 then Motion.oblique
+  else if da = -db then Motion.contrary
+  else if upi a1 a2 = upi b1 b2 then Motion.parallel
+  else Motion.similar
+
+-- Direct (parallel or similar) motion — both voices move in the same direction.
+def isDirect : Motion → Bool
+  | .parallel => true
+  | .similar  => true
+  | _         => false
+
+-- Vertical intervals allowed in first species (between any voice pair):
+-- P1, m3, M3, P4, P5, m6, M6, P8 (and octave-equivalents). Matches the Agda
+-- `firstSpeciesIntervals4` set, which includes P4 between upper voices.
+def isFirstSpeciesAllowed (n : Upi) : Bool :=
+  let i := intervalWithinOctave n
+  i = per1 || i = min3 || i = maj3 || i = per4 || i = per5 || i = min6 || i = maj6
+
+-- Perfect *consonance* used as start/end interval: P1, P5, P8 (no P4).
+def isPerfectConsonance (n : Upi) : Bool :=
+  let i := intervalWithinOctave n
+  i = per1 || i = per5
+
 /-
 
 intervalWithinOctave : Upi → Upi
