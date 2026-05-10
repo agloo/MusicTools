@@ -57,6 +57,10 @@ def scoreScaleMembership (w : Weights) (s : Scale) (cp : List Pitch.Pitch) : Int
       score := score + w.chromatic
   return score
 
+def scoreScaleMembershipSlots
+    (w : Weights) (s : Scale) (cp : List (Option Pitch.Pitch)) : Int :=
+  scoreScaleMembership w s (cp.filterMap id)
+
 -- Strong beats consonant scoring
 
 def scoreStrongConsonant (w : Weights) (cf cp : List Pitch.Pitch) : Int := Id.run do
@@ -197,6 +201,152 @@ def scoreRepeatedNotes (w : Weights) (cp : List Pitch.Pitch) : Int := Id.run do
       score := score + w.repeated
   return score
 
+-- Slot-aware scoring for MuseScore input. These mirror the hard slot-aware
+-- checker in `SecondSpecies` so an opening rest does not shift weak beats.
+
+def scoreStrongConsonantSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    let some iv := vSlotAt cf cp m 0 | continue
+    if isConsonant iv then
+      score := score + w.strongConsonant
+    else
+      score := score - w.strongConsonant
+  return score
+
+def scoreWeakBeatsSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    let some iv := vSlotAt cf cp m 1 | continue
+    if isConsonant iv then
+      score := score + w.weakConsonant
+    else
+      let isPassing :=
+        match cpSlotAt cp m 0, cpSlotAt cp m 1, cpSlotAt cp (m + 1) 0 with
+        | some prev, some weak, some next => isPassingTone prev weak next
+        | _, _, _ => false
+      if isPassing then
+        score := score + w.passingTone
+      else
+        score := score - w.weakConsonant
+  return score
+
+def scoreParallelPerfectStrongSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some iv1 := vSlotAt cf cp (m-1) 0 | continue
+    let some iv2 := vSlotAt cf cp m 0     | continue
+    if isPerfectConsonance iv1 && intervalWithinOctave iv1 = intervalWithinOctave iv2 then
+      score := score + w.parallelPerfect
+    else
+      score := score + 10
+  return score
+
+def scoreDirectIntoPerfectStrongSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some c1 := cf[m-1]?            | continue
+    let some c2 := cf[m]?              | continue
+    let some p1 := cpSlotAt cp (m-1) 0 | continue
+    let some p2 := cpSlotAt cp m 0     | continue
+    let mo := motion c1 c2 p1 p2
+    let target := upi c2 p2
+    if isDirect mo && isPerfectConsonance target then
+      score := score + w.directPerfect
+    else
+      score := score + 10
+  return score
+
+def scoreStartEndSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  if cf.length = 0 then return score
+  match vSlotAt cf cp 0 0 with
+  | some iv =>
+      if isUnisonOrOctave iv then
+        score := score + w.startEnd
+      else
+        score := score - w.startEnd
+  | none =>
+      match vSlotAt cf cp 0 1 with
+      | some iv =>
+          if isUnisonOrOctave iv then
+            score := score + w.startEnd
+          else
+            score := score - w.startEnd
+      | none => pure ()
+  let last := cf.length - 1
+  match vSlotAt cf cp last 0 with
+  | some iv =>
+      if isUnisonOrOctave iv then
+        score := score + w.startEnd
+      else
+        score := score - w.startEnd
+  | none => pure ()
+  return score
+
+def scoreNoMidUnisonSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  if cf.length = 0 then return score
+  let last := cf.length - 1
+  for m in List.range cf.length do
+    if m = 0 || m = last then continue
+    let some iv := vSlotAt cf cp m 0 | continue
+    if iv = per1 then
+      score := score + w.midUnison
+    else
+      score := score + 10
+  return score
+
+def scoreImperfectStrongBeatsSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    let some iv := vSlotAt cf cp m 0 | continue
+    if isImperfectConsonance iv then
+      score := score + w.imperfect
+  return score
+
+def scoreContraryMotionStrongSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some c1 := cf[m-1]?            | continue
+    let some c2 := cf[m]?              | continue
+    let some p1 := cpSlotAt cp (m-1) 0 | continue
+    let some p2 := cpSlotAt cp m 0     | continue
+    if motion c1 c2 p1 p2 = Motion.contrary then
+      score := score + w.contrary
+  return score
+
+def scoreRepeatedNotesSlots
+    (w : Weights) (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) :
+    Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some p := cpSlotAt cp (m - 1) 1 | continue
+    let some q := cpSlotAt cp m 0       | continue
+    if p = q then
+      score := score + w.repeated
+  return score
+
 -- Total weighted score for second-species counterpoint
 
 def scoreSecondSpeciesWithScale (w : Weights) (s : Scale) (cf cp : List Pitch.Pitch) : Int :=
@@ -214,6 +364,25 @@ def scoreSecondSpeciesWithScale (w : Weights) (s : Scale) (cf cp : List Pitch.Pi
 
 def scoreSecondSpecies (w : Weights := {}) (cf cp : List Pitch.Pitch) : Int :=
   scoreSecondSpeciesWithScale w cMajor cf cp
+
+def scoreSecondSpeciesSlotsWithScale
+    (w : Weights) (s : Scale)
+    (cf : List Pitch.Pitch) (cp : List (Option Pitch.Pitch)) : Int :=
+  scoreScaleMembershipSlots w s cp +
+  scoreStrongConsonantSlots w cf cp +
+  scoreWeakBeatsSlots w cf cp +
+  scoreImperfectStrongBeatsSlots w cf cp +
+  scoreParallelPerfectStrongSlots w cf cp +
+  scoreDirectIntoPerfectStrongSlots w cf cp +
+  scoreContraryMotionStrongSlots w cf cp +
+  scoreStartEndSlots w cf cp +
+  scoreNoMidUnisonSlots w cf cp +
+  scoreRepeatedNotesSlots w cf cp
+
+def scoreSecondSpeciesSlots
+    (w : Weights := {}) (cf : List Pitch.Pitch)
+    (cp : List (Option Pitch.Pitch)) : Int :=
+  scoreSecondSpeciesSlotsWithScale w cMajor cf cp
 
 -- Candidate ranking and selection
 

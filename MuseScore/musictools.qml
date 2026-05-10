@@ -1,7 +1,4 @@
-import QtQuick 2.9
-import QtQuick.Controls 2.0
-import QtQuick.Layouts 1.1
-import Qt.labs.settings 1.0
+import QtQuick 2.0
 import MuseScore 3.0
 import FileIO 3.0
 
@@ -22,7 +19,8 @@ MuseScore {
     //      Or select notes and click "Solve selected" → solver fills them in
     //      (solver is first-species only for now).
     //
-    // Settings (species + weights per species) persist via Qt.labs.settings.
+    // The UI uses plain QtQuick items for better compatibility inside
+    // MuseScore's plugin host.
     // -----------------------------------------------------------------------
 
     property string scorePath:      "/tmp/musescore_check.json"
@@ -45,6 +43,21 @@ MuseScore {
         "offbeat-dissonant":            "diss(off)",
         "parallel-perfect-downbeats":   "‖P (down)"
     })
+
+    property var statusTextFragments: [
+        "⚠",
+        "bad ivl",
+        "start≠P",
+        "end≠P",
+        "direct→P",
+        "diss(",
+        "‖P",
+        "unison",
+        "timeout",
+        "no CF voice",
+        "CP/CF",
+        "no solution"
+    ]
 
     // Default weights per species — must match Lean defaults in
     // SecondSpeciesSoftWeighted.Weights, ThirdSpeciesSoftWeighted.Weights, etc.
@@ -99,37 +112,9 @@ MuseScore {
         ]
     })
 
-    // Persistent settings: speciesIdx (0..4 → species 1..5) and weightStore
-    // (a JSON-encoded object keyed by "species:key").
-    Settings {
-        id: prefs
-        category: "MusicToolsCounterpoint"
-        property int speciesIdx: 0
-        property string weightStore: "{}"
-    }
+    property int speciesIdx: 0
 
-    property var weightCache: ({})
-
-    Component.onCompleted: {
-        try { weightCache = JSON.parse(prefs.weightStore) || {} }
-        catch (e) { weightCache = {} }
-        rebuildSliders()
-    }
-
-    function currentSpecies() { return speciesCombo.currentIndex + 1 }
-
-    function weightKey(species, k) { return species + ":" + k }
-
-    function getWeight(species, schemaEntry) {
-        var k = weightKey(species, schemaEntry.key)
-        if (weightCache[k] !== undefined) return weightCache[k]
-        return schemaEntry.def
-    }
-
-    function setWeight(species, key, value) {
-        weightCache[weightKey(species, key)] = value
-        prefs.weightStore = JSON.stringify(weightCache)
-    }
+    function currentSpecies() { return speciesIdx + 1 }
 
     // Build the weights JSON object for the current species, in the shape the
     // Lean side expects (per-species fields, or nested for species 5).
@@ -141,7 +126,7 @@ MuseScore {
             var out = { second: {}, third: {}, fourth: {} }
             for (var i = 0; i < schema.length; i++) {
                 var e = schema[i]
-                var v = getWeight(sp, e)
+                var v = e.def
                 // Map flat species-5 keys → nested {second|third|fourth}.<field>
                 if (e.key.indexOf("second") === 0)      out.second[lower1(e.key.substring(6))]      = v
                 else if (e.key.indexOf("third") === 0)  out.third[lower1(e.key.substring(5))]       = v
@@ -152,7 +137,7 @@ MuseScore {
             var flat = {}
             for (var j = 0; j < schema.length; j++) {
                 var ej = schema[j]
-                flat[ej.key] = getWeight(sp, ej)
+                flat[ej.key] = ej.def
             }
             return flat
         }
@@ -166,149 +151,245 @@ MuseScore {
     // UI
     // -----------------------------------------------------------------------
 
-    ColumnLayout {
+    property var speciesOptions: [
+        { title: "1 - note vs. note",  detail: "First species: strict 1:1 counterpoint" },
+        { title: "2 - 2:1",           detail: "Second species: two half notes against each cantus note" },
+        { title: "3 - 4:1",           detail: "Third species: four quarter notes against each cantus note" },
+        { title: "4 - suspensions",   detail: "Fourth species: tied suspensions and resolutions" },
+        { title: "5 - florid",        detail: "Fifth species: mixed rhythmic species" }
+    ]
+
+    property string pointDetailsText: "Run Check to see the current score.\nFirst species uses strict rules only; no soft-weight score is added."
+
+    function selectSpecies(i) {
+        speciesIdx = i
+        scoreLabel.text = scoreMarker + " selected " + speciesOptions[i].title
+        pointDetailsText = pointGuideForSpecies(currentSpecies(), null, [])
+    }
+
+    function closeDialog() {
+        pollTimer.stop()
+        quit()
+    }
+
+    Rectangle {
+        id: panel
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 10
+        color: "#f7f7f7"
+        border.color: "#b8b8b8"
+        border.width: 1
 
-        RowLayout {
-            spacing: 8
-            Label { text: "Species:" }
-            ComboBox {
-                id: speciesCombo
-                model: ["1 — note vs. note",
-                        "2 — 2:1",
-                        "3 — 4:1",
-                        "4 — suspensions",
-                        "5 — florid"]
-                currentIndex: prefs.speciesIdx
-                onCurrentIndexChanged: {
-                    prefs.speciesIdx = currentIndex
-                    rebuildSliders()
-                }
-                Layout.fillWidth: true
-            }
-        }
-
-        Label {
-            id: scoreLabel
-            text: ""
-            color: "#205020"
+        Text {
+            id: titleText
+            x: 18
+            y: 16
+            width: parent.width - 36
+            text: "MusicTools Counterpoint"
+            color: "#202020"
+            font.pixelSize: 22
             font.bold: true
-            visible: text.length > 0
         }
 
-        GroupBox {
-            title: "Soft constraint weights"
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: currentSpecies() !== 1
+        Text {
+            id: helpText
+            x: 18
+            y: 48
+            width: parent.width - 36
+            text: "Choose a species, then run Check. Leave watch.sh running in a terminal."
+            color: "#555555"
+            font.pixelSize: 13
+            wrapMode: Text.WordWrap
+        }
 
-            ScrollView {
-                anchors.fill: parent
-                clip: true
-                ColumnLayout {
-                    id: slidersColumn
-                    width: parent ? parent.width : 480
-                    spacing: 6
+        Column {
+            id: speciesColumn
+            x: 18
+            y: 92
+            width: parent.width - 36
+            spacing: 8
+
+            Repeater {
+                model: speciesOptions
+                delegate: Rectangle {
+                    width: speciesColumn.width
+                    height: 58
+                    radius: 4
+                    color: speciesIdx === index ? "#dfeeff" : "#ffffff"
+                    border.color: speciesIdx === index ? "#3b78c2" : "#c8c8c8"
+                    border.width: speciesIdx === index ? 2 : 1
+
+                    Text {
+                        x: 12
+                        y: 8
+                        width: parent.width - 24
+                        text: modelData.title
+                        color: "#202020"
+                        font.pixelSize: 16
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        x: 12
+                        y: 31
+                        width: parent.width - 24
+                        text: modelData.detail
+                        color: "#555555"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: selectSpecies(index)
+                    }
                 }
             }
         }
 
-        Label {
-            visible: currentSpecies() === 1
-            text: "First species has no soft weights — only strict rules."
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
+        Text {
+            id: scoreLabel
+            x: 18
+            y: 405
+            width: parent.width - 36
+            text: scoreMarker + " selected " + speciesOptions[speciesIdx].title
+            color: "#205020"
+            font.pixelSize: 13
+            font.bold: true
+            wrapMode: Text.WordWrap
         }
 
-        RowLayout {
-            spacing: 8
-            Layout.fillWidth: true
-            Button {
-                text: "Check"
-                onClicked: runCheck()
-                Layout.fillWidth: true
+        Text {
+            x: 18
+            y: 434
+            width: parent.width - 36
+            text: (currentSpecies() === 1
+                ? "First species has no soft weights. Species 2-5 use default soft weights."
+                : "Species " + currentSpecies() + " will use default soft-constraint weights.")
+            color: "#606060"
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
+        }
+
+        Rectangle {
+            id: pointPanel
+            x: 18
+            y: 466
+            width: parent.width - 36
+            height: parent.height - y - 92
+            radius: 4
+            color: "#ffffff"
+            border.color: "#c8c8c8"
+            border.width: 1
+
+            Text {
+                id: pointTitle
+                x: 10
+                y: 8
+                width: parent.width - 20
+                text: "Point system"
+                color: "#202020"
+                font.pixelSize: 13
+                font.bold: true
             }
-            Button {
+
+            Flickable {
+                id: pointFlick
+                x: 10
+                y: 30
+                width: parent.width - 20
+                height: parent.height - 38
+                clip: true
+                contentWidth: width
+                contentHeight: pointDetails.paintedHeight
+
+                Text {
+                    id: pointDetails
+                    width: pointFlick.width
+                    text: pointDetailsText
+                    color: "#555555"
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+            }
+        }
+
+        Rectangle {
+            id: checkButton
+            x: 18
+            y: parent.height - 70
+            width: 150
+            height: 42
+            radius: 4
+            color: "#2f6fb3"
+
+            Text {
+                anchors.centerIn: parent
+                text: "Check"
+                color: "#ffffff"
+                font.pixelSize: 15
+                font.bold: true
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: runCheck()
+            }
+        }
+
+        Rectangle {
+            id: solveButton
+            x: checkButton.x + checkButton.width + 12
+            y: checkButton.y
+            width: 180
+            height: 42
+            radius: 4
+            color: "#ffffff"
+            border.color: "#8c8c8c"
+
+            Text {
+                anchors.centerIn: parent
                 text: "Solve selected"
+                color: "#202020"
+                font.pixelSize: 15
+                font.bold: true
+            }
+
+            MouseArea {
+                anchors.fill: parent
                 onClicked: {
                     var keys = gatherSelectedKeys()
-                    if (keys === null) {
-                        scoreLabel.text = scoreMarker + " no selection — select notes to solve"
-                    } else if (currentSpecies() !== 1) {
-                        scoreLabel.text = scoreMarker + " solver is first-species only (for now)"
-                    } else {
+                    if (keys === null)
+                        scoreLabel.text = scoreMarker + " no selection - select notes to solve"
+                    else if (currentSpecies() !== 1)
+                        scoreLabel.text = scoreMarker + " solver is first-species only for now"
+                    else
                         runSolve(keys)
-                    }
-                }
-                Layout.fillWidth: true
-            }
-            Button {
-                text: "Reset weights"
-                onClicked: {
-                    var sp = currentSpecies()
-                    var schema = weightSchemas[sp.toString()]
-                    for (var i = 0; i < schema.length; i++) {
-                        delete weightCache[weightKey(sp, schema[i].key)]
-                    }
-                    prefs.weightStore = JSON.stringify(weightCache)
-                    rebuildSliders()
                 }
             }
-            Button {
+        }
+
+        Rectangle {
+            id: closeButton
+            x: parent.width - width - 18
+            y: checkButton.y
+            width: 90
+            height: 42
+            radius: 4
+            color: "#ffffff"
+            border.color: "#8c8c8c"
+
+            Text {
+                anchors.centerIn: parent
                 text: "Close"
-                onClicked: Qt.quit()
+                color: "#202020"
+                font.pixelSize: 15
             }
-        }
-    }
 
-    Component {
-        id: weightRowComponent
-        RowLayout {
-            property var entry
-            property int sp
-            spacing: 8
-            Layout.fillWidth: true
-            Label {
-                text: entry.label
-                Layout.preferredWidth: 200
-                elide: Text.ElideRight
+            MouseArea {
+                anchors.fill: parent
+                onClicked: closeDialog()
             }
-            Slider {
-                id: slider
-                from:    entry.min
-                to:      entry.max
-                value:   getWeight(sp, entry)
-                stepSize: 1
-                snapMode: Slider.SnapAlways
-                Layout.fillWidth: true
-                onMoved: {
-                    setWeight(sp, entry.key, Math.round(value))
-                    valueLabel.text = Math.round(value).toString()
-                }
-            }
-            Label {
-                id: valueLabel
-                text: Math.round(slider.value).toString()
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-            }
-        }
-    }
-
-    function rebuildSliders() {
-        // Drop existing rows.
-        for (var i = slidersColumn.children.length - 1; i >= 0; i--) {
-            var c = slidersColumn.children[i]
-            if (c && c.destroy) c.destroy()
-        }
-        var sp = currentSpecies()
-        var schema = weightSchemas[sp.toString()]
-        if (!schema) return
-        for (var j = 0; j < schema.length; j++) {
-            weightRowComponent.createObject(slidersColumn,
-                { entry: schema[j], sp: sp })
         }
     }
 
@@ -328,6 +409,7 @@ MuseScore {
                 clearStatusTexts()
                 addStatusAtStart(statusMarker + " timeout — is watch.sh running?")
                 curScore.endCmd()
+                pointDetailsText = "No score was returned. Make sure watch.sh is running, then click Check again."
                 return
             }
             var raw = responseFile.read()
@@ -352,13 +434,55 @@ MuseScore {
         if (data.mode === "solve") {
             applySolveResult(data.results || [])
             scoreLabel.text = scoreMarker + " solve done"
+            pointDetailsText = "Solve mode does not use the soft point score."
         } else {
             applyCheckResult(data.violations || [])
             var sc = (data.score !== undefined) ? (" — score " + data.score) : ""
             var n = (data.violations || []).length
             scoreLabel.text = scoreMarker + " " + n + " violation" +
                               (n === 1 ? "" : "s") + sc
+            pointDetailsText = pointGuideForSpecies(currentSpecies(),
+                                                    data.score,
+                                                    data.violations || [])
         }
+    }
+
+    function signed(n) {
+        return n > 0 ? ("+" + n) : n.toString()
+    }
+
+    function pointGuideForSpecies(sp, score, violations) {
+        var lines = []
+        if (score === null || score === undefined)
+            lines.push("Run Check to see the current score.")
+        else
+            lines.push("Current score: " + score)
+
+        var schema = weightSchemas[sp.toString()]
+        if (!schema || schema.length === 0) {
+            lines.push("First species uses strict rules only; no soft-weight score is added.")
+        } else {
+            lines.push("Default soft weights:")
+            for (var i = 0; i < schema.length; i++)
+                lines.push(signed(schema[i].def) + "  " + schema[i].label)
+        }
+
+        if (violations && violations.length > 0) {
+            lines.push("")
+            lines.push("Warnings:")
+            for (var j = 0; j < violations.length; j++) {
+                var v = violations[j]
+                lines.push("step " + v.step + ": " + abbreviate(v.rule) +
+                           " - " + v.detail)
+            }
+        } else if (score !== null && score !== undefined) {
+            lines.push("")
+            lines.push("No hard-rule warnings were returned.")
+        }
+
+        lines.push("")
+        lines.push("The total is computed by Lean from reward/penalty events; this panel shows the active weights and returned warnings.")
+        return lines.join("\n")
     }
 
     function newRequestId() {
@@ -403,6 +527,7 @@ MuseScore {
     function runCheck() {
         if (!curScore) {
             scoreLabel.text = statusMarker + " no score open"
+            pointDetailsText = "Open a score before running Check."
             return
         }
         requestId = newRequestId()
@@ -469,7 +594,12 @@ MuseScore {
             var key = v.part + "/" + v.step
             if (!groups[key]) {
                 groups[key] = { part: v.part, step: v.step,
-                                voiceA: v.voiceA, rules: [] }
+                                voices: [v.voiceA, v.voiceB], rules: [] }
+            } else {
+                if (groups[key].voices.indexOf(v.voiceA) < 0)
+                    groups[key].voices.push(v.voiceA)
+                if (groups[key].voices.indexOf(v.voiceB) < 0)
+                    groups[key].voices.push(v.voiceB)
             }
             if (groups[key].rules.indexOf(v.rule) < 0)
                 groups[key].rules.push(v.rule)
@@ -478,12 +608,14 @@ MuseScore {
             var g = groups[k]
             if (g.part >= map.length) continue
             var entry = map[g.part]
-            if (g.voiceA >= entry.order.length) continue
-            var msVoice = entry.order[g.voiceA]
+            var labelVoice = preferredLabelVoice(entry, g.voices)
+            if (labelVoice >= entry.order.length) continue
+            var msVoice = entry.order[labelVoice]
+            var slotStep = visualStepForVoice(entry, labelVoice, g.step)
             var labels = []
             for (var r = 0; r < g.rules.length; r++)
                 labels.push(abbreviate(g.rules[r]))
-            addStatusAtStep(g.part, msVoice, g.step,
+            addStatusAtStep(g.part, msVoice, slotStep,
                             statusMarker + labels.join("/"))
         }
     }
@@ -493,9 +625,50 @@ MuseScore {
         var entry = map[partIdx]
         if (voiceIdx >= entry.order.length) return
         var msVoice = entry.order[voiceIdx]
-        var noteList = entry.notes[msVoice]
-        if (!noteList || stepIdx >= noteList.length) return
-        noteList[stepIdx].color = "#ff0000"
+        var slotStep = visualStepForVoice(entry, voiceIdx, stepIdx)
+        var slotList = entry.slots[msVoice]
+        if (!slotList || slotStep >= slotList.length) return
+        var slot = slotList[slotStep]
+        if (slot && slot.kind === "chord" && slot.note)
+            slot.note.color = "#ff0000"
+    }
+
+    function subdivisionsForSpecies() {
+        var sp = currentSpecies()
+        if (sp === 3) return 4
+        if (sp === 2 || sp === 4) return 2
+        return 1
+    }
+
+    function isCfVoice(entry, voiceIdx) {
+        if (voiceIdx >= entry.order.length) return false
+        var mv = entry.order[voiceIdx]
+        var len = entry.notes[mv] ? entry.notes[mv].length : 0
+        var minLen = -1
+        for (var i = 0; i < entry.order.length; i++) {
+            var otherMv = entry.order[i]
+            var otherLen = entry.notes[otherMv] ? entry.notes[otherMv].length : 0
+            if (otherLen > 0 && (minLen < 0 || otherLen < minLen))
+                minLen = otherLen
+        }
+        return minLen >= 0 && len === minLen
+    }
+
+    function visualStepForVoice(entry, voiceIdx, stepIdx) {
+        if (currentSpecies() > 1 && currentSpecies() < 5 && isCfVoice(entry, voiceIdx))
+            return Math.floor(stepIdx / subdivisionsForSpecies())
+        return stepIdx
+    }
+
+    function preferredLabelVoice(entry, voices) {
+        if (!voices || voices.length === 0) return 0
+        if (currentSpecies() > 1) {
+            for (var i = 0; i < voices.length; i++) {
+                if (!isCfVoice(entry, voices[i]))
+                    return voices[i]
+            }
+        }
+        return voices[0]
     }
 
     function buildCheckJson() {
@@ -731,9 +904,7 @@ MuseScore {
         var cursor = curScore.newCursor()
         cursor.rewind(0)
         if (!cursor.segment) return
-        var text = newElement(Element.STAFF_TEXT)
-        text.text = msg
-        cursor.add(text)
+        addStatusTextAtCursor(cursor, msg, undefined)
     }
 
     function addStatusAtStep(staff, msVoice, step, msg) {
@@ -743,12 +914,11 @@ MuseScore {
         cursor.voice = msVoice
         var count = 0
         while (cursor.segment) {
-            if (cursor.element && cursor.element.type === Element.CHORD) {
+            if (cursor.element &&
+                (cursor.element.type === Element.CHORD ||
+                 cursor.element.type === Element.REST)) {
                 if (count === step) {
-                    var text = newElement(Element.STAFF_TEXT)
-                    text.text = msg
-                    text.placement = Placement.BELOW
-                    cursor.add(text)
+                    addStatusTextAtCursor(cursor, msg, Placement.BELOW)
                     return
                 }
                 count++
@@ -757,21 +927,49 @@ MuseScore {
         }
     }
 
+    function addStatusTextAtCursor(cursor, msg, placement) {
+        removeStatusTextsFromSegment(cursor.segment)
+        var text = newElement(Element.STAFF_TEXT)
+        text.text = msg
+        if (placement !== undefined)
+            text.placement = placement
+        cursor.add(text)
+    }
+
+    function isStatusTextElement(a) {
+        if (!a || a.type !== Element.STAFF_TEXT || a.text === undefined)
+            return false
+        var t = "" + a.text
+        for (var i = 0; i < statusTextFragments.length; i++) {
+            if (t.indexOf(statusTextFragments[i]) >= 0)
+                return true
+        }
+        return false
+    }
+
+    function removeStatusTextsFromSegment(segment) {
+        if (!segment || !segment.annotations)
+            return
+        var anns = segment.annotations
+        for (var i = anns.length - 1; i >= 0; i--) {
+            var a = anns[i]
+            if (isStatusTextElement(a))
+                removeElement(a)
+        }
+    }
+
     function clearStatusTexts() {
-        var cursor = curScore.newCursor()
-        cursor.rewind(0)
-        while (cursor.segment) {
-            var anns = cursor.segment.annotations
-            if (anns) {
-                for (var i = anns.length - 1; i >= 0; i--) {
-                    var a = anns[i]
-                    if (a && a.type === Element.STAFF_TEXT &&
-                        a.text && a.text.indexOf(statusMarker) === 0) {
-                        removeElement(a)
-                    }
+        for (var staff = 0; staff < curScore.nstaves; staff++) {
+            for (var msVoice = 0; msVoice < 4; msVoice++) {
+                var cursor = curScore.newCursor()
+                cursor.rewind(0)
+                cursor.staffIdx = staff
+                cursor.voice = msVoice
+                while (cursor.segment) {
+                    removeStatusTextsFromSegment(cursor.segment)
+                    cursor.next()
                 }
             }
-            cursor.next()
         }
     }
 }
