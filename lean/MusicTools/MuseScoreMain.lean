@@ -1,5 +1,6 @@
 import Xml
 import Counterpoint
+import Solver
 import ViolationJson
 import Lean.Data.Json
 
@@ -67,6 +68,93 @@ private def escapeJsonStr (s : String) : String :=
       | '\t' => "\\t"
       | _    => String.singleton c) ""
 
+-- ─── Solve mode ───────────────────────────────────────────────────────────
+-- MuseScore uses MIDI pitches (C4 = 60). The Solver uses the Agda
+-- convention (C4 = 48). Convert at the boundary.
+
+private def midiToAgda (p : Pitch.Pitch) : Pitch.Pitch := p - 12
+private def agdaToMidi (p : Pitch.Pitch) : Pitch.Pitch := p + 12
+
+private def parseSolveVoice (j : Json) : Except String (List (Pitch.Pitch × Bool)) := do
+  let arr ← j.getArr?
+  arr.toList.mapM fun n => do
+    let p ← n.getObjValAs? Int "pitch"
+    let f ← n.getObjValAs? Bool "free"
+    pure ((p : Pitch.Pitch), f)
+
+-- Expected shape: {"id": "...", "mode": "solve",
+--                  "parts": [ [ [{pitch, free}, ...], ... ], ... ]}
+private def parseSolveJson (s : String)
+    : Except String (String × List (List (List (Pitch.Pitch × Bool)))) := do
+  let j ← Json.parse s
+  let id ← j.getObjValAs? String "id"
+  let partsJ ← j.getObjVal? "parts"
+  let partsArr ← partsJ.getArr?
+  let parts ← partsArr.toList.mapM fun part => do
+    let voicesArr ← part.getArr?
+    voicesArr.toList.mapM parseSolveVoice
+  pure (id, parts)
+
+private inductive SolveOutcome
+  | solved (pitches : List Pitch.Pitch)  -- MIDI (C4 = 60)
+  | failed (msg : String)
+
+private structure SolveResultEntry where
+  partIdx  : Nat
+  voiceIdx : Nat
+  outcome  : SolveOutcome
+
+private structure SolveVoiceInfo where
+  partIdx  : Nat
+  voiceIdx : Nat
+  notes    : List (Pitch.Pitch × Bool)
+
+-- Pick CP voices (any free=true) and one CF voice (no free notes, any part).
+-- Solve each CP independently against the shared CF.
+private def runSolve (parts : List (List (List (Pitch.Pitch × Bool))))
+    : List SolveResultEntry :=
+  let allVoices : List SolveVoiceInfo :=
+    parts.zipIdx.flatMap fun (voices, pi) =>
+      voices.zipIdx.map fun (notes, vi) => ⟨pi, vi, notes⟩
+  let cpVoices := allVoices.filter (·.notes.any (·.snd))
+  let cfCandidates := allVoices.filter (fun v => !(v.notes.any (·.snd)))
+  match cfCandidates with
+  | [] =>
+      cpVoices.map fun v =>
+        ⟨v.partIdx, v.voiceIdx,
+          .failed "no CF voice (need at least one voice with no marked beats)"⟩
+  | cfInfo :: _ =>
+      let cf : List Pitch.Pitch := cfInfo.notes.map (fun (p, _) => midiToAgda p)
+      cpVoices.map fun v =>
+        if v.notes.length != cf.length then
+          ⟨v.partIdx, v.voiceIdx,
+            .failed s!"CP/CF length mismatch ({v.notes.length} vs {cf.length})"⟩
+        else
+          let cpTemplate : List Solver.MPitch := v.notes.map fun (p, isFree) =>
+            if isFree then Solver.MPitch.free else Solver.MPitch.known (midiToAgda p)
+          match Solver.solvePitches Solver.cMajor cf cpTemplate with
+          | none     => ⟨v.partIdx, v.voiceIdx, .failed "no solution"⟩
+          | some sol => ⟨v.partIdx, v.voiceIdx, .solved (sol.map agdaToMidi)⟩
+
+private def solveResultsToJson (rs : List SolveResultEntry) : String :=
+  let entryJson (r : SolveResultEntry) : String :=
+    let body := match r.outcome with
+      | .solved ps =>
+          ",\"pitches\":[" ++ String.intercalate "," (ps.map toString) ++ "]"
+      | .failed msg =>
+          ",\"error\":\"" ++ escapeJsonStr msg ++ "\""
+    "{\"part\":" ++ toString r.partIdx ++
+    ",\"voice\":" ++ toString r.voiceIdx ++ body ++ "}"
+  "[" ++ String.intercalate "," (rs.map entryJson) ++ "]"
+
+-- Returns "solve" or "check" (default).
+private def detectMode (s : String) : String :=
+  match Json.parse s with
+  | .ok j => match j.getObjValAs? String "mode" with
+    | .ok m    => m
+    | .error _ => "check"
+  | .error _ => "check"
+
 def main (args : List String) : IO Unit := do
   let pathStr : String ← match args with
     | [p] => pure p
@@ -76,12 +164,23 @@ def main (args : List String) : IO Unit := do
   unless ok do throw (IO.userError s!"file not found: {pathStr}")
   if pathStr.endsWith ".json" then
     let txt ← IO.FS.readFile path
-    match parseScoreJson txt with
-    | .error e => throw (IO.userError s!"json parse error: {e}")
-    | .ok (id, parts) =>
-        let pairs := runViolations parts
-        let body := ViolationJson.violationsToJson pairs
-        IO.println ("{\"id\":\"" ++ escapeJsonStr id ++ "\",\"violations\":" ++ body ++ "}")
+    match detectMode txt with
+    | "solve" =>
+        match parseSolveJson txt with
+        | .error e => throw (IO.userError s!"solve json parse error: {e}")
+        | .ok (id, parts) =>
+            let results := runSolve parts
+            let body := solveResultsToJson results
+            IO.println ("{\"id\":\"" ++ escapeJsonStr id ++
+                        "\",\"mode\":\"solve\",\"results\":" ++ body ++ "}")
+    | _ =>
+        match parseScoreJson txt with
+        | .error e => throw (IO.userError s!"json parse error: {e}")
+        | .ok (id, parts) =>
+            let pairs := runViolations parts
+            let body := ViolationJson.violationsToJson pairs
+            IO.println ("{\"id\":\"" ++ escapeJsonStr id ++
+                        "\",\"mode\":\"check\",\"violations\":" ++ body ++ "}")
   else
     match ← fileStream path with
     | none   => throw (IO.userError s!"file not found: {path}")
