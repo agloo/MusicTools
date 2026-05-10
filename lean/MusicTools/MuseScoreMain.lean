@@ -1,6 +1,7 @@
 import Xml
 import Counterpoint
 import Solver
+import SecondSpeciesSolver
 import ViolationJson
 import SecondSpecies
 import ThirdSpecies
@@ -717,7 +718,7 @@ private def runCheckSpecies (req : CheckRequest) : CheckOutcome := Id.run do
   return { pairs, score, points }
 
 -- ─── Solve mode ───────────────────────────────────────────────────────────
--- Solver remains first-species only; species 2–5 solving is a future-work item.
+-- Solver supports first and second species; species 3–5 solving is future work.
 
 private def midiToAgda (p : Pitch.Pitch) : Pitch.Pitch := p - 12
 private def agdaToMidi (p : Pitch.Pitch) : Pitch.Pitch := p + 12
@@ -730,15 +731,17 @@ private def parseSolveVoice (j : Json) : Except String (List (Pitch.Pitch × Boo
     pure ((p : Pitch.Pitch), f)
 
 private def parseSolveJson (s : String)
-    : Except String (String × List (List (List (Pitch.Pitch × Bool)))) := do
+    : Except String (String × Nat × List (List (List (Pitch.Pitch × Bool)))) := do
   let j ← Json.parse s
   let id ← j.getObjValAs? String "id"
+  let species : Nat :=
+    (j.getObjValAs? Nat "species").toOption.getD 1
   let partsJ ← j.getObjVal? "parts"
   let partsArr ← partsJ.getArr?
   let parts ← partsArr.toList.mapM fun part => do
     let voicesArr ← part.getArr?
     voicesArr.toList.mapM parseSolveVoice
-  pure (id, parts)
+  pure (id, species, parts)
 
 private inductive SolveOutcome
   | solved (pitches : List Pitch.Pitch)
@@ -754,7 +757,19 @@ private structure SolveVoiceInfo where
   voiceIdx : Nat
   notes    : List (Pitch.Pitch × Bool)
 
-private def runSolve (parts : List (List (List (Pitch.Pitch × Bool))))
+private def isSolveRestPlaceholder (n : Pitch.Pitch × Bool) : Bool :=
+  n.fst = 0 && !n.snd
+
+private def dropTrailingSolveRests (notes : List (Pitch.Pitch × Bool)) :
+    List (Pitch.Pitch × Bool) :=
+  (notes.reverse.dropWhile isSolveRestPlaceholder).reverse
+
+private def stripSolveRests (notes : List (Pitch.Pitch × Bool)) :
+    List (Pitch.Pitch × Bool) :=
+  notes.filter fun n => !isSolveRestPlaceholder n
+
+private def runSolve (species : Nat)
+    (parts : List (List (List (Pitch.Pitch × Bool))))
     : List SolveResultEntry :=
   let allVoices : List SolveVoiceInfo :=
     parts.zipIdx.flatMap fun (voices, pi) =>
@@ -767,17 +782,33 @@ private def runSolve (parts : List (List (List (Pitch.Pitch × Bool))))
         ⟨v.partIdx, v.voiceIdx,
           .failed "no CF voice (need at least one voice with no marked beats)"⟩
   | cfInfo :: _ =>
-      let cf : List Pitch.Pitch := cfInfo.notes.map (fun (p, _) => midiToAgda p)
+      let cfNotes :=
+        if species = 2 then stripSolveRests cfInfo.notes else cfInfo.notes
+      let cf : List Pitch.Pitch := cfNotes.map (fun (p, _) => midiToAgda p)
       cpVoices.map fun v =>
-        if v.notes.length != cf.length then
-          ⟨v.partIdx, v.voiceIdx,
-            .failed s!"CP/CF length mismatch ({v.notes.length} vs {cf.length})"⟩
-        else
-          let cpTemplate : List Solver.MPitch := v.notes.map fun (p, isFree) =>
-            if isFree then Solver.MPitch.free else Solver.MPitch.known (midiToAgda p)
-          match Solver.solvePitches Solver.cMajor cf cpTemplate with
-          | none     => ⟨v.partIdx, v.voiceIdx, .failed "no solution"⟩
-          | some sol => ⟨v.partIdx, v.voiceIdx, .solved (sol.map agdaToMidi)⟩
+        let solveNotes :=
+          if species = 2 then dropTrailingSolveRests v.notes else v.notes
+        let cpTemplate : List Solver.MPitch := solveNotes.map fun (p, isFree) =>
+          if isFree then Solver.MPitch.free else Solver.MPitch.known (midiToAgda p)
+        match species with
+        | 1 =>
+            if solveNotes.length != cf.length then
+              ⟨v.partIdx, v.voiceIdx,
+                .failed s!"CP/CF length mismatch ({solveNotes.length} vs {cf.length})"⟩
+            else
+              match Solver.solvePitches Solver.cMajor cf cpTemplate with
+              | none     => ⟨v.partIdx, v.voiceIdx, .failed "no solution"⟩
+              | some sol => ⟨v.partIdx, v.voiceIdx, .solved (sol.map agdaToMidi)⟩
+        | 2 =>
+            match SecondSpeciesSolver.solvePitches Solver.cMajor cf cpTemplate with
+            | none =>
+                match SecondSpeciesSolver.solveBestEffort Solver.cMajor cf cpTemplate with
+                | none     => ⟨v.partIdx, v.voiceIdx, .failed "no solution"⟩
+                | some sol => ⟨v.partIdx, v.voiceIdx, .solved (sol.map agdaToMidi)⟩
+            | some sol => ⟨v.partIdx, v.voiceIdx, .solved (sol.map agdaToMidi)⟩
+        | _ =>
+            ⟨v.partIdx, v.voiceIdx,
+              .failed s!"solver does not support species {species}"⟩
 
 private def solveResultsToJson (rs : List SolveResultEntry) : String :=
   let entryJson (r : SolveResultEntry) : String :=
@@ -810,8 +841,8 @@ def main (args : List String) : IO Unit := do
     | "solve" =>
         match parseSolveJson txt with
         | .error e => throw (IO.userError s!"solve json parse error: {e}")
-        | .ok (id, parts) =>
-            let results := runSolve parts
+        | .ok (id, species, parts) =>
+            let results := runSolve species parts
             let body := solveResultsToJson results
             IO.println ("{\"id\":\"" ++ escapeJsonStr id ++
                         "\",\"mode\":\"solve\",\"results\":" ++ body ++ "}")

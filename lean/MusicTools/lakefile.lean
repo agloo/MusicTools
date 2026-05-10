@@ -15,6 +15,7 @@ lean_lib «SecondSpecies»
 lean_lib «ThirdSpecies»
 lean_lib «FourthSpecies»
 lean_lib «FifthSpecies»
+lean_lib «SecondSpeciesSolver»
 lean_lib «SecondSpeciesSoftWeighted»
 lean_lib «ThirdSpeciesSoftWeighted»
 lean_lib «FourthSpeciesSoftWeighted»

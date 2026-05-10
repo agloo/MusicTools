@@ -17,7 +17,7 @@ MuseScore {
     //   3. Pick a species, adjust weights.
     //   4. Click "Check" with no selection → highlight violations + show score.
     //      Or select notes and click "Solve selected" → solver fills them in
-    //      (solver is first-species only for now).
+    //      (solver supports first and second species for now).
     //
     // The UI uses plain QtQuick items for better compatibility inside
     // MuseScore's plugin host.
@@ -567,8 +567,8 @@ MuseScore {
                     var keys = gatherSelectedKeys()
                     if (keys === null)
                         scoreLabel.text = scoreMarker + " no selection - select notes to solve"
-                    else if (currentSpecies() !== 1)
-                        scoreLabel.text = scoreMarker + " solver is first-species only for now"
+                    else if (currentSpecies() > 2)
+                        scoreLabel.text = scoreMarker + " solver supports species 1-2 for now"
                     else
                         runSolve(keys)
                 }
@@ -638,8 +638,16 @@ MuseScore {
 
     function applyResponse(data) {
         if (data.mode === "solve") {
-            applySolveResult(data.results || [])
-            scoreLabel.text = scoreMarker + " solve done"
+            var solveResults = data.results || []
+            applySolveResult(solveResults)
+            var errors = 0
+            for (var i = 0; i < solveResults.length; i++) {
+                if (solveResults[i].error)
+                    errors++
+            }
+            scoreLabel.text = scoreMarker + (errors > 0
+                ? (" solve finished with " + errors + " error" + (errors === 1 ? "" : "s"))
+                : " solve done")
             pointDetailsText = "Solve mode does not use the soft point score."
         } else {
             applyCheckResult(data.violations || [])
@@ -941,7 +949,7 @@ MuseScore {
     }
 
     // -----------------------------------------------------------------------
-    // Solve mode (first-species only; future work to extend)
+    // Solve mode
     // -----------------------------------------------------------------------
 
     function runSolve(selectedKeys) {
@@ -950,7 +958,12 @@ MuseScore {
         if (cpInfo === null) { runCheck(); return }
         requestId = newRequestId()
         var parts = buildSolveJson(map, selectedKeys, cpInfo)
-        var doc = { id: requestId, mode: "solve", parts: parts }
+        var doc = {
+            id: requestId,
+            mode: "solve",
+            species: currentSpecies(),
+            parts: parts
+        }
         scoreFile.write(JSON.stringify(doc))
         pollTimer.attempts = 0
         pollTimer.start()
@@ -984,13 +997,13 @@ MuseScore {
                 for (var i = 0; i < slotList.length; i++) {
                     var slot = slotList[i]
                     var pitch, free
+                    var selected = selectedKeys[staff + ":" + mv + ":" + slot.tick] === true
                     if (slot.kind === "rest") {
                         pitch = 0
-                        free  = isCp
+                        free  = isCp && selected
                     } else {
                         pitch = slot.note.pitch
-                        free  = isCp &&
-                            selectedKeys[staff + ":" + mv + ":" + slot.tick] === true
+                        free  = isCp && selected
                     }
                     notes.push({ pitch: pitch, free: free })
                 }
