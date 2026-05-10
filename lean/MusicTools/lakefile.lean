@@ -8,6 +8,8 @@ package «MusicTools» {
 lean_lib «Pitch»
 lean_lib «Interval»
 lean_lib «Xml»
+lean_lib «Counterpoint»
+lean_lib «Solver»
 
 require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git"
