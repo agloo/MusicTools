@@ -70,8 +70,8 @@ def searchDomain : List Pitch :=
 
 -- Structural backtrack: try each candidate from `searchDomain` for free notes,
 -- pruning immediately when any constraint is violated.
--- Declared `partial` because termination depends on domain finiteness.
-partial def go (s : Scale) (cf : List Pitch)
+-- Terminates on the template list (first arg) shrinking on each call.
+def go (s : Scale) (cf : List Pitch)
     : List MPitch → List Pitch → Option (List Pitch)
   | [],               soFar => some soFar
   | .known p :: rest, soFar =>

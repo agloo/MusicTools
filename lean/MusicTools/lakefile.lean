@@ -22,6 +22,7 @@ lean_lib «FifthSpeciesSoftWeighted»
 lean_lib «SoftWeighted»
 lean_lib «Solver»
 lean_lib «ViolationJson»
+lean_lib «Proofs»
 
 lean_exe «musescore-check» where
   root := `MuseScoreMain
