@@ -15,6 +15,11 @@ lean_lib «SecondSpecies»
 lean_lib «ThirdSpecies»
 lean_lib «FourthSpecies»
 lean_lib «FifthSpecies»
+lean_lib «SecondSpeciesSoftWeighted»
+lean_lib «ThirdSpeciesSoftWeighted»
+lean_lib «FourthSpeciesSoftWeighted»
+lean_lib «FifthSpeciesSoftWeighted»
+lean_lib «SoftWeighted»
 lean_lib «Solver»
 lean_lib «ViolationJson»
 
