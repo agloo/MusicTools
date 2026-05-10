@@ -7,6 +7,15 @@ open Counterpoint
 
 namespace SecondSpecies
 
+-- Weights for soft constraints (positive = reward, negative = penalty)
+def strongConsonantWeight : Int := 50  -- Reward for consonant strong beats
+def weakConsonantWeight : Int := 30    -- Reward for consonant weak beats
+def passingToneWeight : Int := 20      -- Reward for proper passing tones
+def parallelPerfectPenalty : Int := -60  -- Penalty for parallel perfects
+def directIntoPerfectPenalty : Int := -40  -- Penalty for direct motion into perfect
+def startEndPerfectWeight : Int := 80     -- Reward for perfect start/end
+def midUnisonPenalty : Int := -70         -- Penalty for mid unison
+
 -- Second species: two counterpoint notes against one cantus-firmus note.
 -- Inputs:
 --   `cf` is one pitch per measure.
@@ -26,6 +35,110 @@ def vAt (cf cp : List Pitch.Pitch) (m b : Nat) : Option Upi :=
   match cf[m]?, cpAt cp m b with
   | some c, some p => some (upi c p)
   | _, _ => none
+
+-- Scoring function for strong beats consonant
+def scoreStrongConsonant (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    let some iv := vAt cf cp m 0 | continue
+    if isConsonant iv then
+      score := score + strongConsonantWeight
+    else
+      score := score + (-strongConsonantWeight)  -- Penalty for dissonance
+  return score
+
+-- Scoring for weak beats
+def scoreWeakBeats (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    let some iv := vAt cf cp m 1 | continue
+    if isConsonant iv then
+      score := score + weakConsonantWeight
+    else
+      let some prev := cpAt cp m 0     | continue
+      let some weak := cpAt cp m 1     | continue
+      let some next := cpAt cp (m+1) 0 | continue
+      if isPassingTone prev weak next then
+        score := score + passingToneWeight
+      else
+        score := score + (-weakConsonantWeight)  -- Penalty for invalid dissonance
+  return score
+
+-- Scoring for no parallel perfect strong
+def scoreParallelPerfectStrong (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some iv1 := vAt cf cp (m-1) 0 | continue
+    let some iv2 := vAt cf cp m 0     | continue
+    if isPerfect iv1 && intervalWithinOctave iv1 = intervalWithinOctave iv2 then
+      score := score + parallelPerfectPenalty
+    else
+      score := score + (-parallelPerfectPenalty)  -- Reward for avoiding
+  return score
+
+-- Scoring for no direct into perfect strong
+def scoreDirectIntoPerfectStrong (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  for m in List.range cf.length do
+    if m = 0 then continue
+    let some c1 := cf[m-1]?       | continue
+    let some c2 := cf[m]?          | continue
+    let some p1 := cpAt cp (m-1) 0 | continue
+    let some p2 := cpAt cp m 0     | continue
+    let mo := motion c1 c2 p1 p2
+    let target := upi c2 p2
+    if isDirect mo && isPerfect target then
+      score := score + directIntoPerfectPenalty
+    else
+      score := score + (-directIntoPerfectPenalty)  -- Reward for avoiding
+  return score
+
+-- Scoring for start and end perfect
+def scoreStartEnd (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  if cf.length = 0 then return score
+  -- start
+  match vAt cf cp 0 0 with
+  | some iv =>
+      if isPerfectConsonance iv then
+        score := score + startEndPerfectWeight
+      else
+        score := score + (-startEndPerfectWeight)
+  | none => pure ()
+  -- end
+  let last := cf.length - 1
+  match vAt cf cp last 0 with
+  | some iv =>
+      if isPerfectConsonance iv then
+        score := score + startEndPerfectWeight
+      else
+        score := score + (-startEndPerfectWeight)
+  | none => pure ()
+  return score
+
+-- Scoring for no mid unison
+def scoreNoMidUnison (cf cp : List Pitch.Pitch) : Int := Id.run do
+  let mut score : Int := 0
+  if cf.length = 0 then return score
+  let last := cf.length - 1
+  for m in List.range cf.length do
+    if m = 0 || m = last then continue
+    let some iv := vAt cf cp m 0 | continue
+    if iv = per1 then
+      score := score + midUnisonPenalty
+    else
+      score := score + (-midUnisonPenalty)  -- Reward for avoiding
+  return score
+
+-- Total scoring function for second species
+def scoreSecondSpecies (cf cp : List Pitch.Pitch) : Int :=
+  scoreStrongConsonant cf cp +
+  scoreWeakBeats cf cp +
+  scoreParallelPerfectStrong cf cp +
+  scoreDirectIntoPerfectStrong cf cp +
+  scoreStartEnd cf cp +
+  scoreNoMidUnison cf cp
 
 -- Strong beats (cp[2m]) must be consonant.
 def checkStrongConsonant (cf cp : List Pitch.Pitch) : List Violation := Id.run do
