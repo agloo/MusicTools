@@ -1,13 +1,22 @@
 import Pitch
 import Interval
 import Counterpoint
+import Solver
+import SoftWeighted
 open Pitch
 open Interval
 open Counterpoint
+open Solver
+open SoftWeighted
 
 namespace SecondSpecies
 
 -- Weights for soft constraints (positive = reward, negative = penalty)
+def chromaticWeight : Int := -39
+def imperfectWeight : Int := 40
+def contraryWeight : Int := 50
+def repeatedWeight : Int := -29
+
 def strongConsonantWeight : Int := 50  -- Reward for consonant strong beats
 def weakConsonantWeight : Int := 30    -- Reward for consonant weak beats
 def passingToneWeight : Int := 20      -- Reward for proper passing tones
@@ -130,15 +139,6 @@ def scoreNoMidUnison (cf cp : List Pitch.Pitch) : Int := Id.run do
     else
       score := score + (-midUnisonPenalty)  -- Reward for avoiding
   return score
-
--- Total scoring function for second species
-def scoreSecondSpecies (cf cp : List Pitch.Pitch) : Int :=
-  scoreStrongConsonant cf cp +
-  scoreWeakBeats cf cp +
-  scoreParallelPerfectStrong cf cp +
-  scoreDirectIntoPerfectStrong cf cp +
-  scoreStartEnd cf cp +
-  scoreNoMidUnison cf cp
 
 -- Strong beats (cp[2m]) must be consonant.
 def checkStrongConsonant (cf cp : List Pitch.Pitch) : List Violation := Id.run do
