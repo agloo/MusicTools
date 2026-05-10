@@ -102,6 +102,25 @@ def isPerfectConsonance (n : Upi) : Bool :=
   let i := intervalWithinOctave n
   i = per1 || i = per5
 
+-- m2 or M2: a melodic "step".
+def isStep (n : Upi) : Bool := n = min2 || n = maj2
+
+-- m3 or M3.
+def isThird (n : Upi) : Bool := n = min3 || n = maj3
+
+-- Stepwise motion p → q in a given direction.
+def stepUp   (p q : Pitch) : Bool := opi p q = (min2 : Int) || opi p q = (maj2 : Int)
+def stepDown (p q : Pitch) : Bool := opi p q = -(min2 : Int) || opi p q = -(maj2 : Int)
+
+-- p → q → r is a passing tone at q (stepwise in one direction, endpoints a third apart).
+def isPassingTone (p q r : Pitch) : Bool :=
+  ((stepUp p q && stepUp q r) || (stepDown p q && stepDown q r))
+  && isThird (upi p r)
+
+-- p → q → r is a neighbor tone at q (step away and back to the same pitch).
+def isNeighborTone (p q r : Pitch) : Bool :=
+  p = r && (isStep (upi p q))
+
 /-
 
 intervalWithinOctave : Upi → Upi
