@@ -7,8 +7,8 @@ MuseScore {
     version:     "1.1"
     description: "Counterpoint checker / solver. Pick a species and adjust soft-constraint weights."
     pluginType:  "dialog"
-    width:       560
-    height:      720
+    width:       980
+    height:      760
 
     // -----------------------------------------------------------------------
     // Workflow:
@@ -113,8 +113,59 @@ MuseScore {
     })
 
     property int speciesIdx: 0
+    property int weightRefresh: 0
+    property int leftColumnWidth: 540
 
     function currentSpecies() { return speciesIdx + 1 }
+
+    function currentWeight(e) {
+        return e.value === undefined ? e.def : e.value
+    }
+
+    function clampWeight(v, mn, mx) {
+        if (v < mn) return mn
+        if (v > mx) return mx
+        return v
+    }
+
+    function resetDisplayedScore() {
+        scoreLabel.text = scoreMarker + " selected " + speciesOptions[speciesIdx].title
+        pointDetailsText = pointGuideForSpecies(currentSpecies(), null, [], [])
+    }
+
+    function adjustWeightByIndex(rowIndex, delta) {
+        var schema = weightSchemas[currentSpecies().toString()]
+        if (!schema || rowIndex < 0 || rowIndex >= schema.length) return
+        var e = schema[rowIndex]
+        e.value = clampWeight(currentWeight(e) + delta, e.min, e.max)
+        weightRefresh++
+        resetDisplayedScore()
+    }
+
+    function resetWeightsForSpecies() {
+        var schema = weightSchemas[currentSpecies().toString()]
+        if (!schema) return
+        for (var i = 0; i < schema.length; i++)
+            schema[i].value = schema[i].def
+        weightRefresh++
+        resetDisplayedScore()
+    }
+
+    function weightRowsModel(refresh, selectedSpecies) {
+        var schema = weightSchemas[selectedSpecies.toString()]
+        var rows = []
+        if (!schema) return rows
+        for (var i = 0; i < schema.length; i++) {
+            var e = schema[i]
+            rows.push({
+                index: i,
+                label: e.label,
+                value: currentWeight(e),
+                def: e.def
+            })
+        }
+        return rows
+    }
 
     // Build the weights JSON object for the current species, in the shape the
     // Lean side expects (per-species fields, or nested for species 5).
@@ -126,7 +177,7 @@ MuseScore {
             var out = { second: {}, third: {}, fourth: {} }
             for (var i = 0; i < schema.length; i++) {
                 var e = schema[i]
-                var v = e.def
+                var v = currentWeight(e)
                 // Map flat species-5 keys → nested {second|third|fourth}.<field>
                 if (e.key.indexOf("second") === 0)      out.second[lower1(e.key.substring(6))]      = v
                 else if (e.key.indexOf("third") === 0)  out.third[lower1(e.key.substring(5))]       = v
@@ -137,7 +188,7 @@ MuseScore {
             var flat = {}
             for (var j = 0; j < schema.length; j++) {
                 var ej = schema[j]
-                flat[ej.key] = ej.def
+                flat[ej.key] = currentWeight(ej)
             }
             return flat
         }
@@ -163,6 +214,7 @@ MuseScore {
 
     function selectSpecies(i) {
         speciesIdx = i
+        weightRefresh++
         scoreLabel.text = scoreMarker + " selected " + speciesOptions[i].title
         pointDetailsText = pointGuideForSpecies(currentSpecies(), null, [], [])
     }
@@ -205,7 +257,7 @@ MuseScore {
             id: speciesColumn
             x: 18
             y: 92
-            width: parent.width - 36
+            width: leftColumnWidth
             spacing: 8
 
             Repeater {
@@ -251,7 +303,7 @@ MuseScore {
             id: scoreLabel
             x: 18
             y: 424
-            width: parent.width - 36
+            width: leftColumnWidth
             text: scoreMarker + " selected " + speciesOptions[speciesIdx].title
             color: "#205020"
             font.pixelSize: 13
@@ -262,10 +314,10 @@ MuseScore {
         Text {
             x: 18
             y: 448
-            width: parent.width - 36
+            width: leftColumnWidth
             text: (currentSpecies() === 1
                 ? "First species has no soft weights. Species 2-5 use default soft weights."
-                : "Species " + currentSpecies() + " will use default soft-constraint weights.")
+                : "Species " + currentSpecies() + " will use the selected soft-constraint weights.")
             color: "#606060"
             font.pixelSize: 12
             wrapMode: Text.WordWrap
@@ -275,7 +327,7 @@ MuseScore {
             id: pointPanel
             x: 18
             y: 480
-            width: parent.width - 36
+            width: leftColumnWidth
             height: parent.height - y - 92
             radius: 4
             color: "#ffffff"
@@ -310,6 +362,160 @@ MuseScore {
                     color: "#555555"
                     font.pixelSize: 11
                     wrapMode: Text.WordWrap
+                }
+            }
+        }
+
+        Rectangle {
+            id: weightsPanel
+            x: speciesColumn.x + speciesColumn.width + 18
+            y: 92
+            width: parent.width - x - 18
+            height: parent.height - y - 92
+            radius: 4
+            color: "#ffffff"
+            border.color: "#c8c8c8"
+            border.width: 1
+
+            Text {
+                x: 10
+                y: 8
+                width: parent.width - 120
+                text: "Soft weights"
+                color: "#202020"
+                font.pixelSize: 13
+                font.bold: true
+            }
+
+            Rectangle {
+                id: resetWeightButton
+                x: parent.width - width - 10
+                y: 7
+                width: 82
+                height: 24
+                radius: 4
+                color: "#ffffff"
+                border.color: "#8c8c8c"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Reset"
+                    color: "#202020"
+                    font.pixelSize: 11
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: resetWeightsForSpecies()
+                }
+            }
+
+            Text {
+                id: noWeightsText
+                x: 10
+                y: 44
+                width: parent.width - 20
+                visible: currentSpecies() === 1
+                text: "No soft weights for first species."
+                color: "#606060"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            Flickable {
+                id: weightFlick
+                x: 10
+                y: 40
+                width: parent.width - 20
+                height: parent.height - 48
+                clip: true
+                contentWidth: width
+                contentHeight: weightColumn.height
+                visible: currentSpecies() !== 1
+
+                Column {
+                    id: weightColumn
+                    width: weightFlick.width
+                    spacing: 6
+
+                    Repeater {
+                        model: weightRowsModel(weightRefresh, currentSpecies())
+                        delegate: Rectangle {
+                            id: weightRow
+                            property int rowIndex: modelData.index
+                            width: weightColumn.width
+                            height: 42
+                            radius: 4
+                            color: "#f8f8f8"
+                            border.color: "#dddddd"
+                            border.width: 1
+
+                            Text {
+                                x: 8
+                                y: 5
+                                width: parent.width - 158
+                                height: 16
+                                text: modelData.label
+                                color: "#202020"
+                                font.pixelSize: 11
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                x: 8
+                                y: 22
+                                width: parent.width - 158
+                                height: 14
+                                text: "default " + signed(modelData.def)
+                                color: "#777777"
+                                font.pixelSize: 10
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                x: parent.width - 150
+                                y: 12
+                                width: 34
+                                text: signed(modelData.value)
+                                color: modelData.value < 0 ? "#8a3030" : "#205020"
+                                font.pixelSize: 12
+                                font.bold: true
+                                horizontalAlignment: Text.AlignRight
+                            }
+
+                            Repeater {
+                                model: [
+                                    { label: "-10", delta: -10 },
+                                    { label: "-",   delta: -1  },
+                                    { label: "+",   delta: 1   },
+                                    { label: "+10", delta: 10  }
+                                ]
+                                delegate: Rectangle {
+                                    x: weightColumn.width - 108 + index * 28
+                                    y: 9
+                                    width: 24
+                                    height: 24
+                                    radius: 3
+                                    color: "#ffffff"
+                                    border.color: "#8c8c8c"
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: "#202020"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: adjustWeightByIndex(weightRow.rowIndex, modelData.delta)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -463,9 +669,9 @@ MuseScore {
         if (!schema || schema.length === 0) {
             lines.push("First species uses strict rules only; no soft-weight score is added.")
         } else {
-            lines.push("Default soft weights:")
+            lines.push("Selected soft weights:")
             for (var i = 0; i < schema.length; i++)
-                lines.push(signed(schema[i].def) + "  " + schema[i].label)
+                lines.push(signed(currentWeight(schema[i])) + "  " + schema[i].label)
         }
 
         if (points && points.length > 0) {
